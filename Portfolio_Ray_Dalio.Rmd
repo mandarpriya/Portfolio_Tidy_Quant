@@ -1,0 +1,483 @@
+---
+title: "Portfolio_Analysis_Tidy_Models"
+author: "Mandar"
+date: '2022-05-26'
+output: 
+ html_document:
+    code_folding: show #or show
+    df_print: paged #or tibble
+    highlight: tango 
+    number_sections: yes #or no
+    theme: flatly #from bootswitch themes
+    toc: yes #shows table of contents
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align = "center", message = FALSE)
+
+
+```
+# libraries
+
+
+```{r}
+library(tidyquant)
+library(tidyverse)
+library(lubridate)
+library(purrr)
+library(tidymodels)
+library(timetk)
+library(highcharter)
+library(ggplot2)
+library(tidyr)
+library(webshot)
+
+```
+# Downloading the data 
+
+```{r}
+symbols <- c("VTI", "TLT", "IEF", "GLD", "DBC")
+end <- Sys.Date() %>% ymd()
+start <- end - years(17) + days(1)
+raw_data <- symbols %>% 
+    tq_get(get = "stock.prices",
+           from = start,
+           to = end)
+```
+
+# Checking for homogenity of the data
+```{r}
+raw_data %>%
+    group_by(symbol) %>%
+    summarise(
+        min_date = min(date),
+        max_date = max(date)
+    )
+# this shows the data is consistent for the date
+```
+```{r}
+returns_tbl <- raw_data %>%
+    select(symbol, date, adjusted) %>%
+    group_by(symbol) %>%
+    tq_transmute(
+        select     = adjusted,
+        mutate_fun = periodReturn,
+        period     = "monthly",
+        type       = "log"
+    ) %>%
+    ungroup() %>%
+    mutate(date = lubridate::rollback(dates = date, roll_to_first = TRUE))
+
+returns_tbl
+    
+
+
+
+```
+# Spreading the data. We could use spread() but here we use pivot_wider. Same functionality
+
+```{r}
+
+returns_tbl %>%
+    group_by(symbol) %>%
+    pivot_wider(names_from = symbol, values_from = monthly.returns) %>%
+    ungroup() 
+    
+``` 
+# ggplot fot visualization 
+```{r}
+
+g <- returns_tbl %>%
+    ggplot(aes(monthly.returns)) +
+    geom_density(aes(color = symbol), alpha = 0.3) +
+    geom_histogram(aes(fill = symbol), alpha = 0.5, binwidth = 0.005) +
+    guides(color = "none") +
+    labs(
+        title = "Monthly Spread of ETF Returns"
+    ) +
+    theme_tq() + theme(legend.position = "none") +
+    facet_wrap(~ symbol, ncol = 3) +
+    ylab("") +
+    xlab("Monthly Returns") +
+    scale_x_continuous(labels = scales::percent)
+    
+    
+g
+
+```
+```{r}
+library(plotly)
+ggplotly(g)
+```
+# Visualization fo the Returns
+```{r}
+returns_tbl  %>%
+    ggplot(aes(date, monthly.returns, color = symbol)) +
+    geom_line() +
+    facet_wrap(~ symbol, scales = "free_y") +
+    theme_tq() +
+    scale_y_continuous(labels = scales::percent) + theme(legend.position = "none") +
+    geom_smooth(method = "lm") +
+    labs(
+        title = "Monthly Returns of the Funds (2006-2022)",
+        subtitle = " 2008 and to some extent 2020-21 have been the years of fluctuations",
+        caption  = "All Season Fund",
+        y = "Monthly Returns", x = ""
+    )
+```
+# Visualization of the ETFs
+
+```{r}
+raw_data %>%
+    ggplot(aes(date, adjusted, color = symbol)) +
+    geom_line() +
+    facet_wrap(~ symbol, scales = "free_y") +
+    scale_y_continuous(labels = scales::dollar) +
+    theme_tq() + scale_color_tq() +
+    theme(legend.position = "none") +
+    labs(
+        title = "Adjusted Prices of the ETFs (2006-2022) ",
+        subtitle = "Till 2020 all other than Gold & Commodity ETFs experience a rising trend",
+        caption = " All Seasons Fund",
+        y = "Adjusted Price", x = ""
+    )
+```
+# Calculation of Sharpe Ratio for the returns
+```{r}
+S <- returns_tbl  %>%
+    group_by(symbol) %>%
+    tq_performance(
+        Ra = monthly.returns,
+        performance_fun = SharpeRatio.annualized,
+        scale = 12,
+        Rf = 0.03/12
+    ) %>%
+    ungroup() %>%
+    mutate(symbol = as.factor(symbol)) %>%
+    mutate(`AnnualizedSharpeRatio(Rf=3%)` = round(`AnnualizedSharpeRatio(Rf=3%)`,2)) %>%
+    ggplot(aes(symbol, `AnnualizedSharpeRatio(Rf=3%)`, label = `AnnualizedSharpeRatio(Rf=3%)`)) +
+    geom_col(fill = "#2c3e50") +
+    theme_tq() + 
+    scale_color_tq() + 
+    geom_label(nudge_y = -0.05) +
+    labs(title = "Annualized Sharpe Ratio (RFR = 3%)",
+         subtitle = "Commodities fund (DBC) has negative sharpe ratio",
+         caption = "Ray Dalio's All Weather Funds",
+         y = "Sharpe Ratio",
+         x = "Ticker Symbol")
+S
+
+    
+```
+```{r}
+ggplotly(S)
+```
+# Creating the Portfolio based on the Ray Dalio's Philosophy
+
+
+# first weights allocation 
+
+```{r}
+w <-  c(0.3,0.4,0.15,0.075,0.075)
+
+wts_tbl <- tibble(symbols,w)
+
+wts_tbl
+```
+# Visualization of the weight allocation
+
+```{r}
+wts_tbl %>%
+    ggplot(aes(x = "", y = w, fill = symbols)) +
+    # geom_bar(width = 1, stat = "identity") +
+    geom_col() +
+    coord_polar("y", start = 0) +
+    theme(axis.text.x = element_blank())  + 
+    geom_text(label = scales::percent(w), position = position_stack(vjust = 0.5)) +
+    scale_fill_tq() +
+    labs(x = "", y = "", fill = "",
+        title = "Asset weights in portfolio",
+         caption = "Ray Dalio's All Weather Funds"
+        )
+```
+```{r}
+returns_reg_tbl <- returns_tbl %>%
+    group_by(symbol) %>%
+    filter(date >= "2006-03-01")
+returns_reg_tbl 
+```
+
+# Now we create the portfolio based on the weights
+```{r}
+portfolio_returns_tbl <- returns_reg_tbl %>%
+    tq_portfolio(
+        assets_col  =  symbol,
+        returns_col =  monthly.returns,
+        weights     =  wts_tbl,
+       rebalance_on = "years"
+    ) %>%
+    add_column(symbol = "Portfolio", .before = 1) %>%
+    rename(monthly.returns = portfolio.returns)
+end_port_date <-  last(returns_tbl$date)
+portfolio_returns_tbl
+    
+```
+# Visualozation of Portfolio Returns
+
+```{r}
+T <- portfolio_returns_tbl %>%
+    ggplot(aes(date, monthly.returns)) +
+    geom_bar(stat = "identity",
+             fill = palette_green()[[1]]) +
+    theme_tq() +
+    labs(
+        x = "", y = "Portfolio Returns",
+        title = "Portfolio Returns over the Period of time",
+        subtitle = " 40 % TLT, 30% VTI, 15% IEF, 7.5% GLD, 7.5% DBC",
+        caption = "Ray Dalio's All Season Portfolio"
+    )
+T
+```
+
+```{r}
+combined_returns_tbl <- returns_reg_tbl %>%
+    bind_rows(portfolio_returns_tbl)
+
+```
+# Comparing individual ETF returns with the portfolio returns
+```{r}
+ # Combining the returns
+combined_returns_tbl <- returns_tbl %>%
+    bind_rows(portfolio_returns_tbl)
+
+```
+# Comparison of Returns
+```{r}
+combined_returns_tbl %>%
+    ggplot(aes(date, monthly.returns)) +
+    geom_smooth(data = portfolio_returns_tbl,aes(color = symbol), 
+                se = FALSE, linetype = "dashed", color = "blue") +
+    geom_smooth(data = returns_tbl, aes(color = symbol), se = FALSE,
+                linetype = "solid") +
+    scale_y_continuous(labels = scales::percent) +
+    theme_tq() +
+    scale_color_tq() +
+    labs(title = "Monthly Returns of Portfolio vs Individual Fund",
+         subtitle = "Portfolio is the dashed blue line",
+         y = "Monthly Returns") + 
+    annotate(geom = "text",
+             x = end_port_date,
+             y = 0.0015,
+             label = "Portfolio",
+             fontface = "plain") +
+    annotate(geom = "text",
+             x = end_port_date,
+             y = 0.005,
+             label = "GLD",
+             fontface = "plain") +
+    annotate(geom = "text",
+     x = end_port_date,
+     y = 0.008,
+     label = "VTI",
+     fontface = "plain") +
+    annotate(geom = "text",
+             x = end_port_date,
+             y = -0.009,
+             label = "IEF",
+             fontface = "plain") +
+    annotate(geom = "text",
+             x = end_port_date,
+             y = -0.015,
+             label = "TLT",
+             fontface = "plain") +
+    annotate(geom = "text",
+             x = end_port_date,
+             y = 0.045,
+             label = "DBC",
+             fontface = "plain")
+
+
+
+```
+
+# Sharpe Ratio for Individual ETF and Portfolio
+```{r}
+combined_returns_tbl %>%
+    group_by(symbol) %>%
+    tq_performance(Ra = monthly.returns, 
+                   performance_fun = SharpeRatio.annualized,
+                   scale = 12,
+                   Rf = 0.03/12) %>%
+    ungroup() %>%
+    mutate(`AnnualizedSharpeRatio(Rf=3%)` = round(`AnnualizedSharpeRatio(Rf=3%)`,2)) %>%
+    ggplot(aes(symbol, `AnnualizedSharpeRatio(Rf=3%)`, label = `AnnualizedSharpeRatio(Rf=3%)`)) +
+    geom_col(fill = "#2c3e50") +
+    theme_tq() + 
+    scale_color_tq() + 
+    geom_label(nudge_y = -0.05) +
+    labs(title = "Annualized Sharpe Ratio (RFR = 3%)",
+         subtitle = "Commodities fund (DBC) has negative sharpe ratio",
+         caption = "Ray Dalio's All Weather Funds",
+         y = "Sharpe Ratio",
+         x = "Ticker Symbol")
+```
+# Portfolio Growth
+```{r}
+portfolio_investment_tbl <- returns_reg_tbl %>%
+    tq_portfolio(
+        assets_col  =  symbol,
+        returns_col =  monthly.returns,
+        weights     =  wts_tbl,
+       rebalance_on = "years",
+       wealth.index = TRUE
+    ) %>%
+    mutate(investment_growth = portfolio.wealthindex * 100)
+
+ portfolio_investment_tbl %>%
+    ggplot(aes(date, investment_growth)) +
+    geom_line(stat = "identity") +
+    geom_smooth(method = "loess") +
+    theme_tq() +
+    scale_color_tq() +
+    scale_y_continuous(labels = scales::dollar) +
+    labs(title = "All Seasons Fund Portfolio Growth",
+         subtitle = "40% TLT, 30% VTI, 15% IEF, 7.5% GLD and 7.5% DBC",
+         caption = "Ray Dalio's All Weather Funds",
+         x = "",
+         y = "Investment Growth")
+
+I
+
+
+    
+```
+# Putting it altogether
+```{r}
+wt <- c(0.3, 0.4, 0.15, 0.075, 0.075,
+         1, 0, 0, 0, 0,
+         0, 1, 0, 0, 0,
+         0, 0, 1, 0, 0,
+         0, 0, 0, 1, 0,
+         0, 0, 0, 0, 1)
+
+weights_tbl <- tibble(symbols) %>% 
+    tq_repeat_df(n = 6) %>% 
+    bind_cols(tibble(wt)) %>% 
+    group_by(portfolio) 
+
+weights_tbl  %>%
+    ungroup() %>%
+    mutate(wt = paste0(wt*100,"%")) %>%
+    pivot_wider(names_from = symbols,
+                values_from = wt) %>%
+    mutate(portfolio = case_when(
+        portfolio ==1 ~ "All Weather Portfolio",
+        portfolio ==2 ~ "VTI",
+        portfolio ==3 ~ "TLT",
+        portfolio ==4 ~ "IEF",
+        portfolio ==5 ~ "GLD",
+        portfolio ==6 ~ "DBC"
+    ))
+
+```
+# Visualize the growth in investment of $10000
+```{r}
+returns_multi_reg_tbl <- returns_reg_tbl %>% 
+    ungroup() %>% 
+    tq_repeat_df(n = 6)
+returns_multi_reg_tbl
+port_returns_invest_tbl <- returns_multi_reg_tbl %>%
+    tq_portfolio(assets_col = symbol,
+                 returns_col = monthly.returns,
+                 weights = weights_tbl,
+                 wealth.index = TRUE) %>%
+    mutate(investment_growth = portfolio.wealthindex * 10000)
+
+end_port_date <- last(port_returns_invest_tbl$date)
+
+    
+```
+```{r}
+K <- port_returns_invest_tbl %>%
+    ungroup() %>% 
+    mutate(portfolio = case_when(portfolio == 1 ~ "All Seasons Portfolio",
+                                 portfolio == 2 ~ "VTI",
+                                 portfolio == 3 ~ "TLT",
+                                 portfolio == 4 ~ "IEF",
+                                 portfolio == 5 ~ "GLD",
+                                 portfolio == 6 ~ "DBC")) %>% 
+    mutate(portfolio = as.factor(portfolio)) %>% 
+    ggplot(aes(x = date, y = investment_growth, colour = portfolio)) + 
+    geom_line(stat = "identity") + 
+    geom_smooth(method = "loess") +
+    theme_tq() + 
+    scale_color_tq() + 
+    scale_y_continuous(labels = scales::dollar) + 
+    labs(title = "All Seasons Fund Portfolio Growth vs Standalone Security Growth",
+         subtitle = "40% TLT, 30% VTI, 15% IEF, 7.5% GLD and 7.5% DBC",
+         caption = "Ray Dalio's All Weather Funds",
+         x = "",
+         y = "Investment Growth") +
+    annotate(geom = "text",
+             x = end_port_date,
+             y = 24000,
+             label = "Portfolio",
+             fontface = "plain")
+
+K
+```
+```{r}
+library(plotly)
+
+ggplotly(K)
+```
+```{r}
+high_chart_xts <- port_returns_invest_tbl %>%
+    ungroup() %>% 
+    mutate(portfolio = case_when(portfolio == 1 ~ "All Seasons Portfolio",
+                                 portfolio == 2 ~ "VTI",
+                                 portfolio == 3 ~ "TLT",
+                                 portfolio == 4 ~ "IEF",
+                                 portfolio == 5 ~ "GLD",
+                                 portfolio == 6 ~ "DBC")) %>% 
+    select(-portfolio.wealthindex) %>% 
+    pivot_wider(names_from = portfolio, values_from = investment_growth) %>% 
+    tk_xts(date_var = date,
+           silent = TRUE)
+
+
+```
+```{r}
+highchart(type = "stock") %>% 
+    hc_title(text = "All Seasons Fund Portfolio Growth vs Standalone Security Growth") %>% 
+    hc_add_series(high_chart_xts[, 1], 
+                  name = "Portfolio") %>% 
+    hc_add_series(high_chart_xts[, 2],
+                  name = symbols[1]) %>% 
+    hc_add_series(high_chart_xts[,3],
+                  name = symbols[2]) %>% 
+    hc_add_series(high_chart_xts[,4],
+                  name = symbols[3]) %>% 
+    hc_add_series(high_chart_xts[,5],
+                  name = symbols[4]) %>% 
+    hc_add_series(high_chart_xts[,6],
+                  name = symbols[5]) %>%
+    # hc_tooltip(pointFormat = '{series.name}
+    #            ${point.y:,.0f}')
+    hc_tooltip(pointFormat =
+    "<span style=\"color:{series.color}\">{series.name}</span>:<b>${point.y:,.0f}</b><br/>",
+        shared=TRUE)
+
+```
+
+
+
+
+
+
+
+
+
+
+
