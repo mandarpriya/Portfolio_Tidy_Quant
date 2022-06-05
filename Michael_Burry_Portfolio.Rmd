@@ -1,0 +1,294 @@
+---
+title: "Michael_Bury_Portfolio"
+author: "Mandar"
+date: '2022-06-04'
+output: 
+  html_document:
+      code_folding: show #or show
+      df_print: paged #or tibble
+      highlight: tango 
+      number_sections: yes #or no
+      theme: flatly #from bootswitch themes
+      toc: yes #shows table of contents
+      toc_depth: 2
+    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align = "center", message = FALSE, fig.height = 8)
+```
+
+# libraries
+
+```{r }
+library(tidyquant)
+library(tidyverse)
+library(lubridate)
+library(purrr)
+library(tidymodels)
+library(timetk)
+library(highcharter)
+library(ggplot2)
+library(tidyr)
+library(webshot)
+library(dplyr)
+library(tidyr)
+library(dplyr)
+library(plotly)
+```
+
+# Downloading the 
+
+```{r}
+symbols <- c("AAPL","BMY","BKNG","WBD","GOOG","FB","CI","OVV","NXST","STLA","GPN","SPWH")
+
+data <- symbols %>%
+  tq_get(get = "stock.prices",from = "2000-01-01")
+
+```
+```{r}
+data %>%
+  group_by(symbol) %>%
+  summarise(
+    min_date = min(date),
+    max_date = max(date)
+  )
+```
+# So we need a common date, which is 2014-05-01
+```{r}
+data_reg_tbl <- data %>%
+  select(symbol, date, adjusted) %>%
+  group_by(symbol) %>%
+  filter(date>="2014-05-01") %>%
+  ungroup() 
+
+  
+  
+```
+```{r}
+returns_monthly <- data_reg_tbl %>%
+  select(symbol, date, adjusted) %>%
+  group_by(symbol) %>%
+  tq_transmute(
+    select   = adjusted,
+  mutate_fun = periodReturn,
+  period     = "monthly"
+  ) %>%
+  ungroup() %>%
+  mutate(date = rollback(date, roll_to_first = T))
+  
+  
+
+```
+```{r}
+# Visualizations 
+returns_monthly  %>% 
+  ggplot(aes(monthly.returns)) +
+  geom_density(aes(color = symbol), alpha = 0.3) +
+  geom_histogram(aes(fill = symbol), alpha = 0.3, binwidth = 0.0009) +
+  labs(
+        title = "Monthly Spread of Stock Returns"
+    ) +
+    theme_tq() + theme(legend.position = "none") +
+    facet_wrap(~ symbol, ncol = 4, nrow = 8) +
+    ylab("") +
+    xlab("Monthly Returns") +
+    scale_x_continuous(labels = scales::percent)
+  
+```
+```{r}
+returns_monthly  %>%
+    ggplot(aes(date, monthly.returns, color = symbol)) +
+    geom_line() +
+    facet_wrap(~ symbol, scales = "free_y", ncol = 4, nrow =8) +
+    theme_tq() +
+    scale_y_continuous(labels = scales::percent) + theme(legend.position = "none") +
+    geom_smooth(method = "lm") +
+    labs(
+        title = "Monthly Returns of the Funds (2014-2022)",
+        
+        caption  = "Michael Burry Portfolio",
+        y = "Monthly Returns", x = ""
+    )
+```
+```{r}
+data_reg_tbl %>%
+    ggplot(aes(date, adjusted, color = symbol)) +
+    geom_line() +
+    facet_wrap(~ symbol, scales = "free_y") +
+    scale_y_continuous(labels = scales::dollar) +
+    theme_tq() + scale_color_tq() +
+    theme(legend.position = "none") +
+    labs(
+        title = "Adjusted Prices of the Stocks (2014-2022) ",
+        
+        caption = " Michael Burry Portfolio",
+        y = "Adjusted Price", x = ""
+    )
+```
+```{r}
+returns_monthly  %>%
+    group_by(symbol) %>%
+    tq_performance(
+        Ra = monthly.returns,
+        performance_fun = SharpeRatio.annualized,
+        scale = 12,
+        Rf = 0.03/12
+    ) %>%
+    ungroup() %>%
+    mutate(symbol = as.factor(symbol)) %>%
+    mutate(`AnnualizedSharpeRatio(Rf=3%)` = round(`AnnualizedSharpeRatio(Rf=3%)`,2)) %>%
+    ggplot(aes(symbol, `AnnualizedSharpeRatio(Rf=3%)`, label = `AnnualizedSharpeRatio(Rf=3%)`)) +
+    geom_col(fill = "#2c3e50") +
+    theme_tq() + 
+    scale_color_tq() + 
+    geom_label() +
+    labs(title = "Annualized Sharpe Ratio (RFR = 3%)",
+
+         caption = "Michael Burry Portfolio",
+         y = "Sharpe Ratio",
+         x = "Ticker Symbol")
+
+
+```
+# Creating the Portfolio based on Michael Buryy Philosophy
+## Allocation of weights
+#AAPL- 17.86% #BMY-10.88 #BKNG-9.33  #WBD - 9.3 #goog-8.98#CI-8.92,FB - 8.83#OVV-8.06#NXST-7.13#STLA-4.85#GPN-4.53#SPWH-1.33
+
+
+```{r}
+w <- c(17.86,10.88,9.33,9.3,8.98,8.92,8.83,8.06,7.13,4.85,4.53,1.33)
+
+w <- w/100
+sum(w)
+
+weights_tbl <- tibble(symbols,w)
+weights_tbl
+```
+```{r}
+weights_tbl %>%
+  ggplot(aes(x = "", y = w, fill = symbols)) +
+  geom_col() +
+  coord_polar("y", start = 0) +
+  theme(axis.text.x = element_blank()) + 
+  geom_text(label = scales::percent(w), position = position_stack(vjust = 0.7)) +
+  scale_fill_tq() + scale_color_tq() +
+    labs(x = "", y = "", fill = "",
+        title = "Asset weights in portfolio",
+         caption = "Michael Burry's All Portfolio"
+        )
+```
+# Creating Portfolio based on the weights scheme of Michael Burry
+```{r}
+portfolio_returns_tbl <- returns_monthly %>%
+  group_by(symbol) %>%
+  tq_portfolio(
+    assets_col     = symbol,
+    returns_col    = monthly.returns,
+    weights        = weights_tbl,
+    rebalance_on   = "months"
+  ) %>%
+  add_column(symbol = "Portfolio", .before = 1) %>%
+  ungroup() %>%
+  rename(monthly.returns = portfolio.returns) 
+
+end_port_date <- last(portfolio_returns_tbl$date)
+  
+
+```
+```{r}
+g <- portfolio_returns_tbl %>%
+    ggplot(aes(date, monthly.returns)) +
+    geom_bar(stat = "identity",
+             fill = palette_green()[[1]]) +
+    theme_tq() +
+  labs(
+        x = "", y = "Portfolio Returns",
+        title = "Portfolio Returns(2014-2022",
+        
+        caption = "Micahel Burry's  Portfolio"
+    )
+
+g
+```
+```{r}
+ggplotly(g)
+```
+# Combining the portfolio_returns and stock returns together to visualize the returns over the period of time
+# step1
+```{r}
+total_returns_tbl <- returns_monthly %>%
+  bind_rows(portfolio_returns_tbl)
+
+```
+# step2 Visualization
+```{r}
+B <- total_returns_tbl %>%
+  mutate(symbol = as.factor(symbol)) %>%
+  
+  ggplot(aes(date,monthly.returns)) +
+  geom_smooth(data = portfolio_returns_tbl,aes(color = symbol), 
+                se = FALSE, linetype = "dashed", color = "blue") +
+  geom_smooth(data = returns_monthly, aes(color = symbol), se = FALSE,
+                linetype = "solid") +
+  scale_y_continuous(labels = scales::percent)  +
+  theme_tq() +
+  scale_color_tq() + 
+  labs(title = "Monthly Returns of Portfolio vs Individual Stocks",
+       subtitle = "Portfolio is in the dashed blue line",
+       caption = "Michael Burry' Portfolio Performance") +
+  
+  annotate(geom = "text",
+             x = end_port_date,
+             y = -0.0015,
+             label = "Portfolio",
+             fontface = "plain",
+             alpha = 2) 
+B
+  
+  
+ 
+```
+```{r}
+total_returns_tbl %>%
+  group_by(symbol) %>%
+  tq_performance(Ra = monthly.returns, 
+                   performance_fun = SharpeRatio.annualized,
+                   scale = 12,
+                   Rf = 0.03/12) %>%
+  ungroup() %>%
+  mutate(`AnnualizedSharpeRatio(Rf=3%)` = round(`AnnualizedSharpeRatio(Rf=3%)`,2)) %>%
+  ggplot(aes(symbol, `AnnualizedSharpeRatio(Rf=3%)`, label = `AnnualizedSharpeRatio(Rf=3%)`)) +
+    geom_col(fill = "#2c3e50") +
+    theme_tq() + 
+    scale_color_tq() + 
+    geom_label(nudge_y = -0.02) +
+    labs(title = "Annualized Sharpe Ratio (RFR = 3%) ",
+         subtitle = "AAPL has the max Sharpe Ratio and Discovery(WBD) exhibits  -ve Raito",
+         caption = "Michael Burry's Portfolio",
+         y = "Sharpe Ratio",
+         x = "Ticker Symbol")
+
+```
+
+```{r}
+returns_monthly %>%
+  tq_portfolio(assets_col  = symbol,
+               returns_col = monthly.returns,
+               weights     = weights_tbl,
+               rebalance_on = "years",
+               wealth.index = TRUE) %>%
+  mutate(investment_growth = portfolio.wealthindex * 10000) %>%
+  select(date, investment_growth) %>%
+  ggplot(aes(date, investment_growth)) +
+  geom_line(stat = "identity") +
+  geom_smooth(method = "loess") +
+  theme_tq(base_size = 15) + scale_color_tq() +
+  scale_y_continuous(labels = scales::dollar) +
+  labs(
+    title    = "Investment-Growth of Michael Burry's Portfolio",
+    subtitle = "Intial Investment of $10000"
+  )
+```
+
+
