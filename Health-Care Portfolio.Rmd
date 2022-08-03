@@ -1,0 +1,366 @@
+---
+title: "Health_Care_Portfolio"
+author: "Mandar"
+date: "2022-08-03"
+output: 
+   html_document:
+    code_folding: show
+    df_print: paged
+    highlight: tango
+    number_sections: yes
+    theme: flatly
+    toc: yes
+    toc_depth: 2
+---
+
+```{r}
+knitr::opts_chunk$set(
+    echo = FALSE,
+    message = FALSE,
+    warning = FALSE,
+    out.width = "200%",
+    out.height = "500px",
+    fig.pos = "center",
+    dpi = 300)
+```
+
+# getting the data for the healt care sector, which includes Pharma / health care / Instrument  provider companies
+
+```{r }
+symbols_health <- c("PFE","JNJ","MRK","AMGN","LLY")
+
+```
+
+ loading the required libraries
+
+```{r }
+library(tidyverse)
+library(lubridate)
+library(tidyquant)
+library(plotly)
+library(broom)
+library(skimr)
+library(DataExplorer)
+
+```
+# Getting the data
+```{r}
+Health_prices <- symbols_health %>%
+    tq_get(get = "stock.prices",from = "1990-01-01")
+returns_heal <- Health_prices %>%
+    group_by(symbol) %>%
+    select(date,symbol,adjusted) %>%
+    tq_transmute(select = adjusted,
+                 mutate_fun = periodReturn,
+                 period = "monthly",
+                 col_rename = "Health") %>%
+    ungroup() %>%
+    mutate(date = rollback(date, roll_to_first = TRUE))
+
+```
+# Now the usual visualization for the stocks to follow
+# first we can see the stock prices and observe the trend
+```{r}
+Health_prices %>%
+    group_by(symbol) %>%
+    ggplot(aes(date,adjusted, color = symbol)) +
+    geom_line() +
+    theme_tq()+ scale_color_tq(theme = "light") +
+    facet_wrap(~symbol) + labs(
+        title = "Stock Prices of Pharma/Health Care stocks",
+        subtitle = "We observe a rising trend",
+        y = "Adjusted Stock Prices",
+        x = ""
+    ) +
+    scale_y_continuous(labels = scales::dollar) + theme(legend.position = "none")
+    
+```
+# in order to have an interactive we need the plotly
+```{r}
+P <- Health_prices %>%
+    group_by(symbol) %>%
+    ggplot(aes(date,adjusted, color = symbol)) +
+    geom_line() +
+    theme_tq()+ scale_color_tq(theme = "light") +
+    facet_wrap(~symbol) + labs(
+        title = "Stock Prices of Pharma/Health Care stocks",
+        subtitle = "We observe a rising trend",
+        y = "Adjusted Stock Prices",
+        x = ""
+    ) +
+    scale_y_continuous(labels = scales::dollar) + theme(legend.position = "none")
+
+ggplotly(P)
+```
+# We visualize the monthly returns over the period of time
+```{r}
+returns_heal %>%
+    group_by(symbol) %>%
+    ggplot(aes(x = Health)) +
+    geom_density(aes(color = symbol), alpha = 1) +
+    geom_histogram(aes(fill = symbol), alpha = 0.45, binwidth = .005) +
+    guides(colour = "none") +
+    theme_tq() + labs(
+        title = "Spread of  Returns for selected Health Care Stocks",
+        subtitle = "Top Tech Stocks Monthly Returns from 1990:2022"
+        
+    ) + ylab("Count") +xlab("Monthly_Returns") + theme(legend.position = "none") +
+    facet_wrap(~ symbol) +
+    scale_y_continuous() + scale_x_continuous(labels = scales::percent)
+    
+```
+# We visualize the monthly returns to observe the volatility over the period of time
+```{r}
+returns_heal %>%
+    group_by(symbol) %>%
+    ggplot(aes(date, Health, color = symbol)) +
+    geom_line() + facet_wrap(~symbol) +
+    theme_tq() + scale_color_tq(theme = "light") +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+        title = "Monthly Returns of Selected Health Care Stocks ",
+        subtitle = " Volatility observed in 2000,and  in 2008/2009",
+        y = "Monthly Returns",
+        x = ""
+    ) + theme(legend.position = "none")
+
+```
+```{r}
+returns_heal %>%
+    group_by(symbol) %>%
+    tq_performance(Ra = Health,
+                   performance_fun = SharpeRatio.annualized,
+                   scale = 12,
+                   Rf = 0.03/12)  %>%
+    ungroup() %>%
+    mutate(symbol = as.factor(symbol)) %>%
+    mutate(`AnnualizedSharpeRatio(Rf=3%)` = round(`AnnualizedSharpeRatio(Rf=3%)`, 2)) %>%
+    ggplot(aes(symbol, `AnnualizedSharpeRatio(Rf=3%)`, label = `AnnualizedSharpeRatio(Rf=3%)`)) +
+    geom_col(fill = "#2c3e50") +
+    theme_tq() +
+    scale_color_tq(theme = "light") +
+    geom_label(nudge_y = -0.01) +
+    labs(title = "Annualized Sharpe Ratio (RFR = 3%)",
+         subtitle = "AMGN and JNJ have the highest sharpe ratio and MRK having the lowest",
+         caption = "Selected Pharma Stocks ",
+         y = "Sharpe Ratio",
+         x = "") + theme(legend.position = "none")
+
+```
+# Creating the portfolio based on equal weight scheme
+```{r}
+n <- length(symbols_health)
+w <- rep(1/n,n)
+wts_tbl <- tibble(symbols_health,w)
+wts_tbl
+```
+```{r}
+wts_tbl %>% 
+    ggplot(aes(x = "", y = w, fill = symbols_health)) + 
+    geom_bar(width = 1, stat = "identity") + 
+    coord_polar("y", start = 0) + 
+    theme(axis.text.x = element_blank()) +
+    geom_text(label = scales::percent(w), position = position_stack(vjust = 0.5)) +
+    scale_fill_tq(theme = "light") + 
+    labs(
+         title = "Health-Care Portfolio",
+         caption = " Equal Weighted"
+         )
+```
+```{r}
+port_returns_tbl <- returns_heal %>%
+    group_by(symbol) %>%
+    tq_portfolio(assets_col   = symbol,
+                 returns_col  = Health,
+                 weights      = wts_tbl,
+                 rebalance_on = "years") %>%
+    add_column(symbol ="Portfolio",.before = 1) %>%
+    rename(Health = portfolio.returns)
+combined_tbl <- port_returns_tbl %>%
+    rbind(returns_heal%>% group_by(symbol))
+
+
+```
+```{r}
+end_port_date = last(port_returns_tbl$date)
+combined_tbl %>%
+    ggplot(aes(date, Health)) +
+    geom_smooth(data = port_returns_tbl,
+                aes(color = symbol),
+                se = FALSE,
+                linetype= "dashed",
+                colour = "blue") +
+    geom_smooth(data = returns_heal,
+                aes(colour = symbol),
+                se = FALSE,
+                linetype= "solid"
+                ) +
+    scale_y_continuous() + theme_tq() + scale_color_tq(theme = "light") +
+    scale_y_continuous(labels = scales::percent) +
+    labs(title = "Monthly Returns of Portfolio vs Individual Stocks",
+         subtitle = "Portfolio is the dashed blue line",
+         y = "Monthly Returns") +
+    annotate(geom = "text",
+             x = end_port_date,
+             y = 0.016,
+             label = "Portfolio",
+             fontface = "plain")
+```
+```{r}
+combined_tbl %>%
+    group_by(symbol) %>%
+    tq_performance(Ra = Health,
+                   performance_fun = SharpeRatio.annualized,
+                   scale = 12,
+                   Rf = 0.03 / 12) %>% 
+    ungroup() %>%
+    mutate(symbol = as.factor(symbol)) %>%
+    mutate(`AnnualizedSharpeRatio(Rf=3%)` = round(`AnnualizedSharpeRatio(Rf=3%)`, 2)) %>%
+    ggplot(aes(symbol, `AnnualizedSharpeRatio(Rf=3%)`, label = `AnnualizedSharpeRatio(Rf=3%)`)) +
+    geom_col(fill = "#2c3e50") +
+    theme_tq() + scale_color_tq(theme = "light") +
+    geom_label(nudge_y = -0.01) +
+    labs(
+        title = "Annualized Sharpe Ratio",
+        subtitle = "Portfolio has the highest Sharpe Raito ",
+        caption = "Selected Health Stocks",
+        x ="", y = "Sharpe Ratio"
+    )
+```
+```{r}
+investment_tbl <- returns_heal %>%
+    group_by(symbol) %>%
+    tq_portfolio(
+        assets_col  = symbol,
+        returns_col = Health,
+        weights     = wts_tbl,
+        wealth.index = TRUE ) %>%
+    mutate(investment_growth = portfolio.wealthindex  * 1000)
+investment_tbl %>%
+    ggplot(aes(date, investment_growth)) +
+    geom_line(stat = "identity") +
+    theme_tq() + scale_color_tq(theme = "light") +
+    scale_color_tq() +
+    scale_y_continuous(labels = scales::dollar) +
+    labs(
+        title = "Investment Growth of Portfolio for an Investment of $1000",
+        subtitle = "Equal Weight Allocation",
+        caption = "Selected Health-Care Stocks",
+        x ="",
+        y = "Investment Growth"
+    )
+```
+```{r}
+w_2 <- c(0.2, 0.2, 0.2, 0.2, 0.2,
+         1, 0, 0, 0, 0,
+         0, 1, 0, 0, 0,
+         0, 0, 1, 0, 0,
+         0, 0, 0, 1, 0,
+         0, 0, 0, 0, 1)
+weights_tbl <- tibble(symbols_health) %>% 
+    tq_repeat_df(n = 6) %>% 
+    bind_cols(tibble(w_2)) %>%
+    group_by(portfolio)
+```
+```{r}
+weights_tbl %>% 
+    ungroup() %>% 
+    mutate(w_2 = paste0(w_2*100, "%")) %>% 
+    pivot_wider(names_from = symbols_health, values_from = w_2) %>% 
+    mutate(portfolio = case_when(portfolio == 1 ~ "Health-Care Portfolio",
+                                 portfolio == 2 ~ "PFE",
+                                 portfolio == 3 ~ "JNJ",
+                                 portfolio == 4 ~ "MRK",
+                                 portfolio == 5 ~ "AMGN",
+                                 portfolio == 6 ~ "LLY")) 
+
+```
+```{r}
+returns_multi_tbl <- returns_heal %>%
+    tq_repeat_df(n = 6)
+
+
+port_investment_tbl <- returns_multi_tbl %>% 
+    tq_portfolio(assets_col = symbol,
+                 returns_col = Health,
+                 weights = weights_tbl,
+                 wealth.index = TRUE) %>% 
+    mutate(investment.growth = portfolio.wealthindex * 1000)
+
+```
+```{r}
+port_investment_tbl %>%
+    ungroup() %>% 
+    mutate(portfolio = case_when(portfolio == 1 ~ "Health-Care Portfolio",
+                                 portfolio == 2 ~ "PFE",
+                                 portfolio == 3 ~ "JNJ",
+                                 portfolio == 4 ~ "MRK",
+                                 portfolio == 5 ~ "AMGN",
+                                 portfolio == 6 ~ "LLY"))  %>%
+      
+    mutate(portfolio = as.factor(portfolio)) %>% 
+    ggplot(aes(x = date, y = investment.growth, colour = portfolio)) + 
+    geom_line(stat = "identity") + 
+    theme_tq() + 
+    scale_color_tq() + 
+    scale_y_continuous(labels = scales::dollar) + 
+    labs(title = "Health-Care Portfolio Growth vs Standalone Security Growth",
+         subtitle = "Equal Weight Allocation",
+         caption = "Selected Stocks",
+         x = "",
+         y = "Investment Growth") +
+    annotate(geom = "text",
+             x = last(port_investment_tbl$date),
+             y = 344000,
+             label = "Portfolio",
+             fontface = "plain")
+```
+# Using High-Charter
+```{r}
+library(timetk)
+high_chart_xts <- port_investment_tbl %>%
+    ungroup() %>% 
+    mutate(portfolio = case_when(portfolio == 1 ~ "Health-Care Portfolio",
+                                 portfolio == 2 ~ "PFE",
+                                 portfolio == 3 ~ "JNJ",
+                                 portfolio == 4 ~ "MRK",
+                                 portfolio == 5 ~ "AMGN",
+                                 portfolio == 6 ~ "LLY")) %>%
+    select(-portfolio.wealthindex) %>% 
+    pivot_wider(names_from = portfolio, values_from = investment.growth) %>% 
+    tk_xts(date_var = date,
+           silent = TRUE)
+
+```
+```{r}
+library(highcharter)
+highchart(type = "stock") %>% 
+    hc_title(text = "Health-Care Portfolio Growth vs Standalone Security Growth") %>% 
+    hc_add_series(high_chart_xts[, 1], 
+                  name = "Portfolio") %>% 
+    hc_add_series(high_chart_xts[, 2],
+                  name = symbols_health[1]) %>% 
+    hc_add_series(high_chart_xts[,3],
+                  name = symbols_health[2]) %>% 
+    hc_add_series(high_chart_xts[,4],
+                  name = symbols_health[3]) %>% 
+    hc_add_series(high_chart_xts[,5],
+                  name = symbols_health[4]) %>% 
+    hc_add_series(high_chart_xts[,6],
+                  name = symbols_health[5]) %>%
+    # hc_tooltip(pointFormat = '{series.name}
+    #            ${point.y:,.0f}')
+    hc_tooltip(pointFormat =
+    "<span style=\"color:{series.color}\">{series.name}</span>:<b>${point.y:,.0f}</b><br/>",
+        shared=TRUE)
+```
+#
+```{r}
+sessionInfo()
+```
+
+
+
+
+
+
