@@ -1,0 +1,371 @@
+---
+title: "Financial_Portfolio"
+author: "Mandar"
+date: "2022-08-03"
+output: 
+ html_document:
+    code_folding: show
+    df_print: paged
+    highlight: tango
+    number_sections: yes
+    theme: flatly
+    toc: yes
+    toc_depth: 2
+    
+---
+
+```{r }
+knitr::opts_chunk$set(
+    echo = FALSE,
+    message = FALSE,
+    warning = FALSE,
+    out.width = "200%",
+    out.height = "500px",
+    fig.pos = "center",
+    dpi = 300)
+```
+loading the libraries
+```{r}
+library(tidyquant)
+library(tidyverse)
+library(tidyr)
+library(broom)
+library(scales)
+library(tidymodels)
+```
+
+# Downloading the data for Banking Stocks
+
+
+```{r}
+symbols_fin <- c("JPM","C","USB","BAC","WFC") %>% sort()
+
+Fin_Prices <- symbols_fin %>%
+    tq_get(get = "stock.prices", from = "1990-01-01")
+
+returns_fin <- Fin_Prices %>%
+    group_by(symbol) %>%
+    select(symbol, date, adjusted) %>%
+    tq_transmute(select     = adjusted,
+                 mutate_fun = periodReturn,
+                 period     = "monthly",
+                 col_rename = "Fin") %>%
+    ungroup() %>%
+    mutate(date = rollback(date, roll_to_first = TRUE))
+    
+
+```
+# visualization of the spread of returns
+
+
+```{r }
+returns_fin %>%
+    group_by(symbol) %>%
+    ggplot(aes(x= Fin)) +
+    geom_density(aes(color = symbol), alpha = 1) +
+    theme_tq() + scale_color_tq(theme = "light") +
+    geom_histogram(aes(fill = symbol), alpha = 0.45, binwidth = .005) +
+    guides( color = "none") + facet_wrap(~ symbol) + theme(legend.position = "none") +
+    scale_y_continuous() + scale_x_continuous(labels = scales::percent) +
+    labs(title = "Spread of Returns of Banking Stocks",
+         subtitle = "Top Banking Stocks Monthly Returns from 1990-2022") +
+    ylab("Count") + xlab("Monthly Returns")
+
+
+```
+# Visualization of Returns of the Banking Stocks
+```{r}
+returns_fin %>%
+    group_by(symbol) %>%
+    ggplot(aes(date, Fin, color = symbol)) +
+    geom_line() + facet_wrap(~symbol, scales = "free_y") +
+    theme_tq()+ scale_color_tq(theme = "light")+
+    scale_y_continuous(labels = scales::percent) + 
+    labs(
+        title = "Monthly Returns of selected Banking Stocks",
+        subtitle = " High volatility observed for the period 2008/2009 ",
+        y = "Monthly Returns",
+        x = ""
+    ) + theme(legend.position = "none")
+```
+# using the plotly library for interactive 
+```{r}
+library(plotly)
+g <- returns_fin %>%
+    group_by(symbol) %>%
+    ggplot(aes(date, Fin, color = symbol)) +
+    geom_line() + facet_wrap(~symbol, scales = "free_y") +
+    theme_tq()+ scale_color_tq(theme = "light")+
+    scale_y_continuous(labels = scales::percent) + 
+    labs(
+        title = "Monthly Returns of selected Banking Stocks",
+        subtitle = " High volatility observed for the period 2008/2009 ",
+        y = "Monthly Returns",
+        x = ""
+    ) + theme(legend.position = "none")
+
+ggplotly(g)
+
+```
+# Visauliation of Stock prices to understand the trend
+```{r}
+Fin_Prices %>% 
+    group_by(symbol) %>%
+    ggplot(aes( date, adjusted, color = symbol)) +
+    geom_line() + facet_wrap(~symbol, scales = "free_y") +
+    theme_tq() + scale_color_tq(theme = "dark") +
+    labs(title = "Stock Prices of Banking Stocks",
+         subtitle = "Rising Trend Observed",
+         y = "Adjusted Stock Price", x = "") + theme(legend.position = "none")
+```
+# Visualization of Sharpe Ratio
+```{r}
+returns_fin%>%
+    group_by(symbol) %>%
+    tq_performance(Ra = Fin,
+                   performance_fun = SharpeRatio.annualized,
+                   scale = 12,
+                   Rf = 0.03/12)  %>%
+    ungroup() %>%
+    mutate(symbol = as.factor(symbol)) %>%
+    mutate(`AnnualizedSharpeRatio(Rf=3%)` = round(`AnnualizedSharpeRatio(Rf=3%)`, 2)) %>%
+    ggplot(aes(symbol, `AnnualizedSharpeRatio(Rf=3%)`, label = `AnnualizedSharpeRatio(Rf=3%)`)) +
+    geom_col(fill = "#2c3e50") +
+    theme_tq() +
+    scale_color_tq(theme = "light") +
+    geom_label(nudge_y = -0.01)  +
+    labs(title = "Annualized Sharpe Ratio (RFR = 3%)",
+         subtitle = "Citi Bank (C) has the lowestsharpe ratio while US Bank Corp (USB) has the highest",
+         caption = "Selected Banking Stocks ",
+         y = "Sharpe Ratio",
+         x = "") + theme(legend.position = "none")
+```
+# Creating Portfolio
+```{r}
+n <- length(symbols_fin)
+w <- rep(1/n,n)
+wts_tbl <- tibble(symbols_fin,w)
+
+wts_tbl %>% 
+    ggplot(aes(x = "", y = w, fill = symbols_fin)) + 
+    geom_bar(width = 1, stat = "identity") + 
+    coord_polar("y", start = 0) + 
+    theme(axis.text.x = element_blank()) +
+    geom_text(label = scales::percent(w), position = position_stack(vjust = 0.5)) +
+    scale_fill_tq(theme = "light") + 
+    labs(
+         title = "Fin Portfolio",
+         caption = " Equal Weighted"
+         )
+
+```
+```{r}
+port_returns_tbl <- returns_fin %>%
+    group_by(symbol) %>%
+    tq_portfolio(assets_col   = symbol,
+                 returns_col  = Fin,
+                 weights      = wts_tbl,
+                 rebalance_on = "years") %>%
+    add_column(symbol ="Portfolio",.before = 1) %>%
+    rename(Fin = portfolio.returns)
+port_returns_tbl
+```
+```{r}
+combined_tbl <- port_returns_tbl %>%
+    rbind(returns_fin %>% group_by(symbol))
+```
+```{r}
+end_port_date = last(port_returns_tbl$date)
+combined_tbl %>%
+    ggplot(aes(date,Fin)) +
+    geom_smooth(data = port_returns_tbl,
+                aes(color = symbol),
+                se = FALSE,
+                linetype= "dashed",
+                colour = "blue") +
+    geom_smooth(data = returns_fin,
+                aes(colour = symbol),
+                se = FALSE,
+                linetype= "solid"
+                ) +
+    scale_y_continuous() + theme_tq() + scale_color_tq(theme = "light") +
+    scale_y_continuous(labels = scales::percent) +
+    labs(title = "Monthly Returns of Portfolio vs Individual Stocks",
+         subtitle = "Portfolio is the dashed blue line",
+         y = "Monthly Returns") +
+    annotate(geom = "text",
+             x = end_port_date,
+             y = 0.007,
+             label = "Portfolio",
+             fontface = "plain")
+```
+```{r}
+combined_tbl %>%
+    group_by(symbol) %>%
+    tq_performance(Ra = Fin,
+                   performance_fun = SharpeRatio.annualized,
+                   scale = 12,
+                   Rf = 0.03 / 12) %>% 
+    ungroup() %>%
+    mutate(symbol = as.factor(symbol)) %>%
+    mutate(`AnnualizedSharpeRatio(Rf=3%)` = round(`AnnualizedSharpeRatio(Rf=3%)`, 2)) %>%
+    ggplot(aes(symbol, `AnnualizedSharpeRatio(Rf=3%)`, label = `AnnualizedSharpeRatio(Rf=3%)`)) +
+    geom_col(fill = "#2c3e50") +
+    theme_tq() + scale_color_tq(theme = "light") +
+    geom_label(nudge_y = -0.01) +
+    labs(
+        title = "Annualized Sharpe Ratio",
+        subtitle = "USB has the highest Sharpe Raito ",
+        caption = "Selected Bank Stocks",
+        x ="", y = "Sharpe Ratio"
+    )
+```
+# Investment Growth for our stocks , investing $1000
+```{r}
+investment_tbl <- returns_fin %>%
+    group_by(symbol) %>%
+    tq_portfolio(
+        assets_col  = symbol,
+        returns_col = Fin,
+        weights     = wts_tbl,
+        wealth.index = TRUE ) %>%
+    mutate(investment_growth = portfolio.wealthindex  * 1000)
+investment_tbl %>%
+    ggplot(aes(date, investment_growth)) +
+    geom_line(stat = "identity") +
+    theme_tq() + scale_color_tq(theme = "light") +
+    scale_color_tq() +
+    scale_y_continuous(labels = scales::dollar) +
+    labs(
+        title = "Investment Growth of Portfolio for an Investment of $1000",
+        subtitle = "Equal Weight Allocation",
+        caption = "Selected Banking Stocks",
+        x ="",
+        y = "Investment Growth"
+    )
+```
+# Using Plotly
+```{r}
+I <- investment_tbl %>%
+    ggplot(aes(date, investment_growth)) +
+    geom_line(stat = "identity") +
+    theme_tq() + scale_color_tq(theme = "light") +
+    scale_color_tq() +
+    scale_y_continuous(labels = scales::dollar) +
+    labs(
+        title = "Investment Growth of Portfolio for an Investment of $1000",
+        subtitle = "Equal Weighted Portfolio ",
+        caption = "Selected Banking Stocks",
+        x ="",
+        y = "Investment Growth"
+    )
+ggplotly(I)
+
+```
+```{r}
+w_2 <- c(0.2, 0.2, 0.2, 0.2, 0.2,
+         1, 0, 0, 0, 0,
+         0, 1, 0, 0, 0,
+         0, 0, 1, 0, 0,
+         0, 0, 0, 1, 0,
+         0, 0, 0, 0, 1)
+weights_tbl <- tibble(symbols_fin) %>% 
+    tq_repeat_df(n = 6) %>% 
+    bind_cols(tibble(w_2)) %>%
+    group_by(portfolio)
+```
+```{r}
+weights_tbl %>% 
+    ungroup() %>% 
+    mutate(w_2 = paste0(w_2*100, "%")) %>% 
+    pivot_wider(names_from = symbols_fin, values_from = w_2) %>% 
+    mutate(portfolio = case_when(portfolio == 1 ~ "Fin Portfolio",
+                                 portfolio == 2 ~ "BAC",
+                                 portfolio == 3 ~ "C",
+                                 portfolio == 4 ~ "JPM",
+                                 portfolio == 5 ~ "USB",
+                                 portfolio == 6 ~ "WFC")) 
+```
+```{r}
+returns_multi_tbl <- returns_fin %>%
+    tq_repeat_df(n = 6)
+port_investment_tbl <- returns_multi_tbl %>% 
+    tq_portfolio(assets_col = symbol,
+                 returns_col = Fin,
+                 weights = weights_tbl,
+                 wealth.index = TRUE) %>% 
+    mutate(investment.growth = portfolio.wealthindex * 1000)
+
+port_investment_tbl %>%
+    ungroup() %>% 
+    mutate(portfolio = case_when(portfolio == 1 ~ "Fin Portfolio",
+                                 portfolio == 2 ~ "BAC",
+                                 portfolio == 3 ~ "C",
+                                 portfolio == 4 ~ "JPM",
+                                 portfolio == 5 ~ "USB",
+                                 portfolio == 6 ~ "WFC")) %>% 
+    mutate(portfolio = as.factor(portfolio)) %>% 
+    ggplot(aes(x = date, y = investment.growth, colour = portfolio)) + 
+    geom_line(stat = "identity") + 
+    theme_tq() + 
+    scale_color_tq() + 
+    scale_y_continuous(labels = scales::dollar) + 
+    labs(title = "Fin Portfolio Growth vs Standalone Security Growth",
+         subtitle = "Equal Weight Allocation",
+         caption = "Selected Banking Stocks",
+         x = "",
+         y = "Investment Growth") +
+    annotate(geom = "text",
+             x = last(port_investment_tbl$date),
+             y = 30000,
+             label = "Portfolio",
+             fontface = "plain")
+```
+# using high charter
+```{r}
+library(timetk)
+high_chart_xts <- port_investment_tbl %>%
+    ungroup() %>% 
+    mutate(portfolio = case_when(portfolio == 1 ~ "Fin Portfolio",
+                                 portfolio == 2 ~ "BAC",
+                                 portfolio == 3 ~ "C",
+                                 portfolio == 4 ~ "JPM",
+                                 portfolio == 5 ~ "USB",
+                                 portfolio == 6 ~ "WFC"))%>% 
+    select(-portfolio.wealthindex) %>% 
+    pivot_wider(names_from = portfolio, values_from = investment.growth) %>% 
+    tk_xts(date_var = date,
+           silent = TRUE)
+```
+```{r}
+library(highcharter)
+library(highcharter)
+highchart(type = "stock") %>% 
+    hc_title(text = "Fin Portfolio Growth vs Standalone Security Growth") %>% 
+    hc_add_series(high_chart_xts[, 1], 
+                  name = "Portfolio") %>% 
+    hc_add_series(high_chart_xts[, 2],
+                  name = symbols_fin[1]) %>% 
+    hc_add_series(high_chart_xts[,3],
+                  name = symbols_fin[2]) %>% 
+    hc_add_series(high_chart_xts[,4],
+                  name = symbols_fin[3]) %>% 
+    hc_add_series(high_chart_xts[,5],
+                  name = symbols_fin[4]) %>% 
+    hc_add_series(high_chart_xts[,6],
+                  name = symbols_fin[5]) %>%
+    # hc_tooltip(pointFormat = '{series.name}
+    #            ${point.y:,.0f}')
+    hc_tooltip(pointFormat =
+    "<span style=\"color:{series.color}\">{series.name}</span>:<b>${point.y:,.0f}</b><br/>",
+        shared=TRUE)
+```
+```{r}
+sessionInfo()
+```
+
+
+
+
+
+
