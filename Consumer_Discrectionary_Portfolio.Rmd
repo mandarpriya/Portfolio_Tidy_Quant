@@ -1,0 +1,349 @@
+---
+title: "Consumer_Discrection_Portfolio"
+author: "Mandar"
+date: "2022-08-06"
+output: 
+ html_document :
+   code_folding : show
+
+    
+---
+
+```{r }
+knitr::opts_chunk$set(
+    echo = TRUE,
+    message = FALSE,
+    warning = FALSE,
+    out.width = "100%",
+    out.height = "500px",
+    fig.pos = "center",
+    dpi = 300)
+
+```
+
+# Loading the libraries
+
+```{r}
+library(tinytex)
+library(tidyquant)
+library(tidyverse)
+library(tidyr)
+library(broom)
+library(scales)
+library(tidymodels)
+library(plotly)
+```
+# Data for Consumer Discretionary Stocks:
+Consumer discretionary companies produce products that the public does not need to purchase.ypes of consumer discretionary companies include fast-food restaurants, entertainment products and services, clothing and automobiles. Some of the largest companies in this sector include McDonald's, Walt Disney, Amazon.com and Ford Motor Co.
+
+
+```{r}
+symbols <- c("MCD","DIS","TGT","NKE","CCL")
+
+prices <- symbols %>%
+    tq_get(get = "stock.prices",from = "1990-01-01")
+```
+# Calculating the returns
+
+```{r}
+returns <- prices %>% 
+    group_by(symbol) %>%
+    select(date,symbol, adjusted) %>%
+    tq_transmute(select     = adjusted,
+                 mutate_fun = periodReturn,
+                 period     = "monthly",
+                 col_rename = "Ret") %>%
+    ungroup() %>%
+    mutate(date = rollback(date, roll_to_first = TRUE))
+    
+```
+# checking for consistency of date
+```{r}
+returns %>%
+    group_by(symbol) %>%
+    summarise(mini_date = min(date),
+              max_date = max(date))
+
+```
+# visualization of spread of the returns of the stocks
+```{r}
+returns %>%
+    group_by(symbol) %>%
+    ggplot(aes(x = Ret)) +
+    geom_density(aes(color = symbol), alpha = 1) +
+    geom_histogram(aes(fill = symbol), alpha = 0.5, binwidth = 0.005) +
+    facet_wrap(~ symbol) + theme_tq() + scale_color_tq(theme = "light") +
+    theme(legend.position = "none") +
+    labs(
+        title = "Spread of Monthly Returns of Consumer Discretionary Stocks",
+        subtitle = "All the stocks have nearly the same spread",
+        caption = "Selected Consumer Discretionary stocks",
+        x = "", y = ""
+    ) + scale_x_continuous(labels = scales::percent) 
+
+```
+# visualization of Returns over the period of time
+```{r}
+returns %>%
+    group_by(symbol) %>%
+    ggplot(aes(date,Ret, color = symbol)) +
+    geom_line(alpha = 1) + facet_wrap(~ symbol) +
+    scale_y_continuous(labels = scales::percent) + theme_tq() + scale_color_tq(theme= "light") +
+    labs(
+        title = "Monthly Returns of Consumer Discretionary Stocks (1990-2022)",
+        subtitle = "Periods of volatility observed around 2000, and 2020",
+        y = "", x = ""
+    ) + theme(legend.position = "none")
+
+```
+# Visualization of stock prices over the period time to undertand the trend
+```{r}
+prices %>%
+    group_by(symbol) %>%
+    ggplot(aes(date, adjusted, color = symbol)) +
+    geom_line() + facet_wrap(~symbol) + 
+    theme_tq() + scale_color_tq(theme = "light") +
+    scale_y_continuous(labels = scales::dollar) + labs(
+        title = "Stock Prices of Consumer Discretionary Stocks",
+        subtitle = "Exception of Carnival Corporation & plc(CCL) ,rest all show a rising trend",
+        y = "Adjusted Stock Prices", x = ""
+    ) + theme(legend.position = "none")
+```
+# Sharpe Ratio Calculations and Visualization
+```{r}
+returns%>%
+    group_by(symbol) %>%
+    tq_performance(Ra = Ret,
+                   performance_fun = SharpeRatio.annualized,
+                   scale = 12,
+                   Rf = 0.03/12)  %>%
+    ungroup() %>%
+    mutate(symbol = as.factor(symbol)) %>%
+    mutate(`AnnualizedSharpeRatio(Rf=3%)` = round(`AnnualizedSharpeRatio(Rf=3%)`, 2)) %>%
+    ggplot(aes(symbol, `AnnualizedSharpeRatio(Rf=3%)`, label = `AnnualizedSharpeRatio(Rf=3%)`)) +
+    geom_col(fill = "#2c3e50") +
+    theme_tq() +
+    scale_color_tq(theme = "light") +
+    geom_label(nudge_y = -0.01)  +
+    labs(title = "Annualized Sharpe Ratio (RFR = 3%)",
+         subtitle = "McDonalds(MCD) has the highest sharpe ratio while CCL has the lowest",
+         caption = "Selected  Consumer Discretionary Stocks ",
+         y = "Sharpe Ratio",
+         x = "") + theme(legend.position = "none")
+
+```
+# Creating the weights tbl 
+```{r}
+n <- length(symbols)
+w <- rep(1/n,n)
+wts_tbl <- tibble(symbols,w)
+```
+
+# Creating the Portfolio
+```{r}
+port_tbl <- returns %>%
+  group_by(symbol) %>%
+  tq_portfolio(
+    assets_col   = symbol,
+    returns_col  = Ret,
+    weights      = wts_tbl,
+    rebalance_on = "years",
+  ) %>%
+  add_column(symbol ="Portfolio",.before = 1) %>%
+  rename(Ret = portfolio.returns)
+port_tbl
+```
+# combining the data
+```{r}
+combined_returns_tbl <- port_tbl %>%
+  rbind(returns %>% group_by(symbol))
+
+end_date <- last(port_tbl$date)
+```
+```{r}
+combined_returns_tbl %>%
+  ggplot(aes(date,Ret)) +
+  geom_smooth(data = port_tbl,
+              aes(color = symbol), se = FALSE,linetype= "dashed",
+                colour = "blue") +
+  geom_smooth(data = returns,
+                aes(colour = symbol),
+                se = FALSE,
+                linetype= "solid"
+                ) +
+  
+     theme_tq() + scale_color_tq(theme = "light") +
+    
+  
+    scale_y_continuous(labels = scales::percent) + 
+    labs(title = "Monthly Returns of Portfolio vs Individual Stocks",
+         subtitle = "Portfolio is the dashed blue line", x ="",
+         y = "Monthly Returns") +
+    annotate(geom = "text",
+             x = end_date,
+             y = 0.0017,
+             label = "Portfolio",
+             fontface = "plain") 
+```
+# Sharpe Ratio comparison of Standalone stocks Vs Portfolio
+```{r}
+combined_returns_tbl %>%
+    group_by(symbol) %>%
+    tq_performance(Ra = Ret,
+                   performance_fun = SharpeRatio.annualized,
+                   scale = 12,
+                   Rf = 0.03 / 12) %>% 
+    ungroup() %>%
+    mutate(symbol = as.factor(symbol)) %>%
+    mutate(`AnnualizedSharpeRatio(Rf=3%)` = round(`AnnualizedSharpeRatio(Rf=3%)`, 2)) %>%
+    ggplot(aes(symbol, `AnnualizedSharpeRatio(Rf=3%)`, label = `AnnualizedSharpeRatio(Rf=3%)`)) +
+    geom_col(fill = "#2c3e50") +
+    theme_tq() + scale_color_tq(theme = "light") +
+    geom_label(nudge_y = -0.01) +
+    labs(
+        title = "Annualized Sharpe Ratio",
+        subtitle = "Portfolio has the highest Sharpe Raito ",
+        caption = "Selected  Stocks",
+        x ="", y = "Sharpe Ratio"
+    )
+
+```
+# Investment Growth for our Portfolio
+```{r}
+investment_tbl <- returns %>%
+    group_by(symbol) %>%
+    tq_portfolio(
+        assets_col  = symbol,
+        returns_col = Ret,
+        weights     = wts_tbl,
+        wealth.index = TRUE ) %>%
+    mutate(investment_growth = portfolio.wealthindex  * 1000)
+I <- investment_tbl %>%
+    ggplot(aes(date, investment_growth)) +
+    geom_line(stat = "identity") + geom_smooth(method  = "loess") +
+  
+    theme_tq() + scale_color_tq(theme = "light") +
+    scale_color_tq() +
+    scale_y_continuous(labels = scales::dollar) +
+    labs(
+        title = "Investment Growth of Portfolio for an Investment of $1000",
+        subtitle = "Equal Weight Allocation",
+        caption = "Selected Consumer-Discretionary Stocks",
+        x ="",
+        y = "Investment Growth"
+    )
+ggplotly(I)
+```
+# combining all the things together, 
+```{r}
+w_2 <- c(0.2, 0.2, 0.2, 0.2, 0.2,
+         1, 0, 0, 0, 0,
+         0, 1, 0, 0, 0,
+         0, 0, 1, 0, 0,
+         0, 0, 0, 1, 0,
+         0, 0, 0, 0, 1)
+weights_tbl <- tibble(symbols) %>% 
+    tq_repeat_df(n = 6) %>% 
+    bind_cols(tibble(w_2)) %>%
+    group_by(portfolio)
+```
+```{r}
+weights_tbl %>% 
+    ungroup() %>% 
+    mutate(w_2 = paste0(w_2*100, "%")) %>% 
+    pivot_wider(names_from = symbols, values_from = w_2) %>% 
+    mutate(portfolio = case_when(portfolio == 1 ~ "Portfolio",
+                                 portfolio == 2 ~ "MCD",
+                                 portfolio == 3 ~ "DIS",
+                                 portfolio == 4 ~ "TGT",
+                                 portfolio == 5 ~ "NKE",
+                                 portfolio == 6 ~ "CCL")) 
+```
+```{r}
+returns_multi_tbl <- returns %>%
+  tq_repeat_df(n = 6)
+
+port_investment_tbl <- returns_multi_tbl %>%
+  tq_portfolio(assets_col   = symbol, 
+               returns_col  = Ret,
+               weights      = weights_tbl,
+               wealth.index = TRUE) %>%
+  mutate(investment.growth = portfolio.wealthindex * 1000)
+```
+```{r}
+end_date <- last(port_investment_tbl$date)
+port_investment_tbl %>%
+    ungroup() %>% 
+     mutate(portfolio = case_when(portfolio == 1 ~ "Portfolio",
+                                 portfolio == 2 ~ "MCD",
+                                 portfolio == 3 ~ "DIS",
+                                 portfolio == 4 ~ "TGT",
+                                 portfolio == 5 ~ "NKE",
+                                 portfolio == 6 ~ "CCL"))%>% 
+    mutate(portfolio = as.factor(portfolio)) %>% 
+    ggplot(aes(x = date, y = investment.growth, colour = portfolio)) + 
+    geom_line(stat = "identity") + 
+    geom_smooth(method = "loess") + 
+    theme_tq() + 
+    scale_color_tq() + 
+    scale_y_continuous(labels = scales::dollar) + 
+    labs(title = "All Seasons Fund Portfolio Growth vs Standalone Security Growth",
+         subtitle = "Equal Weight Allocation ",
+         caption = "Selected Stocks",
+         x = "",
+         y = "Investment Growth") +
+    annotate(geom = "text",
+             x = end_date,
+             y = 78000,
+             label = "Portfolio",
+             fontface = "plain")
+```
+```{r}
+library(timetk)
+high_chart_xts <- port_investment_tbl %>%
+    ungroup() %>% 
+    mutate(portfolio = case_when(portfolio == 1 ~ "Portfolio",
+                                 portfolio == 2 ~ "MCD",
+                                 portfolio == 3 ~ "DIS",
+                                 portfolio == 4 ~ "TGT",
+                                 portfolio == 5 ~ "NKE",
+                                 portfolio == 6 ~ "CCL"))%>% 
+    select(-portfolio.wealthindex) %>% 
+    pivot_wider(names_from = portfolio, values_from = investment.growth) %>% 
+    tk_xts(date_var = date,
+           silent = TRUE)
+
+```
+```{r}
+library(highcharter)
+highchart(type = "stock") %>% 
+    hc_title(text = "Consumer-Discretionary Portfolio Growth vs Standalone Security Growth") %>% 
+    hc_add_series(high_chart_xts[, 1], 
+                  name = "Portfolio") %>% 
+    hc_add_series(high_chart_xts[, 2],
+                  name = symbols[1]) %>% 
+    hc_add_series(high_chart_xts[,3],
+                  name = symbols[2]) %>% 
+    hc_add_series(high_chart_xts[,4],
+                  name = symbols[3]) %>% 
+    hc_add_series(high_chart_xts[,5],
+                  name = symbols[4]) %>% 
+    hc_add_series(high_chart_xts[,6],
+                  name = symbols[5]) %>%
+    # hc_tooltip(pointFormat = '{series.name}
+    #            ${point.y:,.0f}')
+    hc_tooltip(pointFormat =
+    "<span style=\"color:{series.color}\">{series.name}</span>:<b>${point.y:,.0f}</b><br/>",
+        shared=TRUE)
+```
+```{r}
+sessionInfo()
+```
+
+
+
+
+
+
+
+
