@@ -1,0 +1,272 @@
+---
+title: "Health_Care"
+author: "Mandar"
+date: "2022-08-26"
+output: 
+    html_document :
+      code_folding: hide
+      df_print: paged
+      highlight: tango
+      number_sections: yes
+      theme: flatly
+      toc: yes
+      toc_depth: 2
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE,fig.align = "center",
+                        message = FALSE,
+                      warning = FALSE)
+options(tinytex.verbose = TRUE)
+```
+#The healthcare sector consists of businesses that provide medical services, manufacture medical equipment or drugs, provide medical insurance, or otherwise facilitate the provision of healthcare to patients. The healthcare sector is one of the largest and most complex in the U.S. economy, accounting for 18% of gross domestic product (GDP) in 2020. The U.S. healthcare sector benefits from a strong system of medical research and development, in cooperation with the higher education system and the technology industry. The aging U.S. population and the advancing senescence of the Baby Boomer generation are driving ongoing strong demand in the healthcare sector.
+
+# loading the libraries
+```{r }
+library(tidymodels)
+library(tidyquant)
+library(tidyverse)
+library(scales)
+library(kableExtra)
+library(lubridate)
+library(ggplot2)
+library(plotly)
+library(timetk)
+library(modeltime)
+library(DataExplorer)
+library(correlationfunnel)
+```
+# Data for Health Sector
+
+
+```{r }
+# tickers 
+symbols <- c("JNJ","PFE","CVS","UNH","AMGN") %>% sort()
+# Stock prices
+prices <- symbols %>% tq_get(get = "stock.prices",from = "1990-01-01")
+# monthly Returns
+returns <-prices %>%
+    group_by(symbol) %>%
+    tq_transmute(select = adjusted,
+                 mutate_fun = periodReturn,
+                 period = "monthly") %>%
+    ungroup() %>%
+    mutate(date = rollback(date, roll_to_first = TRUE))
+
+#visualiaztion
+returns %>% 
+    group_by(symbol) %>%
+    ggplot(aes(date, monthly.returns, color = symbol)) +
+    geom_line() + scale_y_continuous(labels = scales::percent) +
+    theme_tq() + facet_wrap(~symbol) + scale_color_tq(theme = "light") +
+    labs(
+        title = "Stocks Returns",
+        subtitle = "Health Sector",
+        caption = "Stocks(JNJ,PFE,CVS,UNH,AMGN)",
+        x = "",
+        y = "Returns"
+    ) + theme(legend.position = "none")
+    
+
+```
+# Portfolio Creation
+```{r}
+#Weights Allocation
+w <- rep(1/5, 5)
+# Portfolio Creation
+port_ret_tbl <- returns %>%
+    tq_portfolio(assets_col = symbol,
+                 returns_col = monthly.returns,
+                 weights = w) %>%
+    add_column(symbol = "Portfolio", .before = 1)
+# Visualization
+## ggplot
+port_ret_tbl %>%
+    ggplot(aes(date, portfolio.returns)) +
+    geom_line() + scale_y_continuous(labels = scales::percent) + geom_smooth(method = "loess") +
+    labs(title = "Portfolio Returns",
+         subtitle = "Healthcare Sector",
+         x = "",
+         y = "Returns")
+
+## timetk
+port_ret_tbl %>%
+    plot_time_series(
+        .date_var = date,
+        .value    = portfolio.returns,
+        .title = "Portfolio Returns",
+        .x_lab = "",
+        .y_lab = "Returns"
+    )
+
+    
+
+```
+# S&P 500
+```{r}
+market_prices <- tq_get("^GSPC", get = "stock.prices",from = "1990-01-01")
+market_returns <-  market_prices %>%
+    tq_transmute(select = adjusted,
+                 mutate_fun = periodReturn,
+                 period = "monthly",
+                 col_rename = "market_ret") %>%
+    mutate(date = rollback(date, roll_to_first = TRUE))
+```
+# Fama-French Data
+```{r}
+library(frenchdata)
+factors_ff_monthly_raw <- download_french_data("Fama/French 3 Factors")
+factors_ff_monthly <- factors_ff_monthly_raw$subsets$data[[1]] |>
+  transmute(
+    date = floor_date(ymd(str_c(date,"01")),"month"),
+    rf = as.numeric(RF) / 100,
+    mkt_excess = as.numeric(`Mkt-RF`) / 100,
+    smb = as.numeric(SMB) / 100,
+    hml = as.numeric(HML) / 100
+  ) %>%
+  # filter the dates 
+  filter(date >= "1990-01-01")
+
+factors_ff_monthly 
+```
+# Combining all the data
+```{r}
+port_risk_market_tbl <- port_ret_tbl %>%
+    left_join(factors_ff_monthly, by = "date") %>%
+    left_join(market_returns, by = "date") %>%
+    mutate(excess_returns = portfolio.returns - rf) %>%
+    mutate(market_excess_returns = market_ret - rf) %>%
+    select(symbol, date, mkt_excess, smb, hml, excess_returns, market_excess_returns)
+```
+# Beta Estimation
+## Step 1 : CAPM Function
+```{r}
+library(slider)
+# estimate capm
+estimate_capm <- function(data, min_obs = 1) {
+  if (nrow(data) < min_obs) {
+    beta <- as.numeric(NA)
+  } else {
+    fit <- lm(excess_returns ~ mkt_excess + smb+hml+ market_excess_returns, data = data)
+    beta <- as.numeric(fit$coefficients[2])
+  }
+  return(beta)
+}
+# rolling capm estimation
+roll_capm_estimation <- function(data, months, min_obs) {
+  data <- bind_rows(data) |>
+    arrange(date)
+
+  betas <- slide_period_vec(
+    .x = data,
+    .i = data$date,
+    .period = "month",
+    .f = ~estimate_capm(., min_obs),
+    .before = months - 1,
+    .complete = FALSE
+  )
+
+  tibble(
+    month = unique(data$date),
+    beta = betas
+  )
+}
+```
+## Step 2 : Estimation
+```{r}
+beta_port_tbl <- port_risk_market_tbl %>%
+    mutate(roll_capm_estimation(cur_data(), months = 60, min_obs = 48)) %>%
+    select(symbol, date, beta) %>%
+    drop_na() 
+    
+    
+
+```
+## Step 3 : Visualization
+```{r}
+beta_port_tbl %>%
+    plot_time_series(
+        .date_var = date,
+        .value = beta,
+        .title = "Rolling Beta ",
+        .x_lab = "",
+        .y_lab = "Beta"
+    )
+```
+## ggplot
+```{r}
+beta_port_tbl %>%
+    ggplot(aes(date, beta))+
+    geom_line() + geom_smooth(method = "loess") +
+    scale_y_continuous() + theme_tq() + scale_color_tq(theme = "light") +
+    labs(
+        title = "Rolling Beta ",
+        subtitle = "Healthcare Sector",
+        caption = "Stocks(JNJ,PFE,CVS,UNH,AMGN",
+        x = "",
+        y = "Beta"
+    )
+```
+## Step 4 : Beta stocks
+### step 1: combining the returns, market index and fama-french
+```{r}
+returns_risk_market_tbl <- returns %>%
+    group_by(symbol) %>%
+    left_join(factors_ff_monthly, by = "date") %>%
+    left_join(market_returns, by = "date") %>%
+    mutate(excess_returns = monthly.returns -rf) %>%
+    mutate(market_excess_returns = market_ret - rf) %>%
+    ungroup()  %>%
+    select(symbol, date, excess_returns, market_excess_returns, mkt_excess, smb, hml)
+``` 
+### step 2 : estimation
+```{r}
+beta_stocks_tbl <- returns_risk_market_tbl %>%
+    group_by(symbol) %>%
+    mutate(roll_capm_estimation(cur_data(), months = 60, min_obs = 48)) %>%
+    ungroup() %>%
+    select(symbol, date, beta) %>%
+    drop_na()
+```
+### step 3 : visualization
+```{r}
+beta_stocks_tbl %>%
+    group_by(symbol) %>%
+    ggplot(aes(date, beta, color = symbol)) +
+    geom_line() + scale_y_continuous() +
+    theme_tq() +
+    labs(
+        title = "Rolling Beta Estimates(PFE,JNJ,CVS,UNH,AMGN)",
+        subtitle = "Healthcare Sector Stocks",
+        x = "",
+        y = "Beta"
+        
+    )
+```
+#### timetk
+```{r}
+beta_stocks_tbl %>%
+    plot_time_series(
+        .value = beta,
+        .date_var = date,
+        .color_var = symbol,
+        .smooth = FALSE,
+        .title = "Rolling Beta estimates",
+        .x_lab = "",
+        .y_lab = "Beta",
+        .legend_show = FALSE
+    )
+```
+
+
+
+
+
+
+
+
+
+
+
+
+

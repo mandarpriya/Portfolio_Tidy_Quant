@@ -1,0 +1,337 @@
+---
+title: "Consumer-Discretionary"
+author: "Mandar"
+date: "2022-08-23"
+output: 
+  html_document :
+      code_folding: hide
+      df_print: paged
+      highlight: tango
+      number_sections: yes
+      theme: flatly
+      toc: yes
+      toc_depth: 2
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE,fig.align = "center",
+                        message = FALSE,
+                      warning = FALSE)
+options(tinytex.verbose = TRUE)
+```
+# Consumer discretionary is a term for classifying goods and services that are considered non-essential by consumers, but desirable if their available income is sufficient to purchase them. Examples of consumer discretionary products can include durable goods, high-end apparel, entertainment, leisure activities, and automobiles.     
+
+
+# Loading the required libraries
+```{r }
+library(tidymodels)
+library(tidyquant)
+library(tidyverse)
+library(scales)
+library(kableExtra)
+library(lubridate)
+library(ggplot2)
+library(plotly)
+library(timetk)
+library(modeltime)
+library(DataExplorer)
+library(correlationfunnel)
+```
+# Data for Consumer-Discretionary Stocks
+
+```{r }
+symbols <- c("TGT","NKE","MCD","HD","CCL") %>% sort()
+prices <- symbols %>%
+  tq_get(get = "stock.prices", from = "1990-01-01")
+returns <- prices %>%
+  group_by(symbol) %>%
+  select(symbol, date, adjusted) %>%
+  tq_transmute(select = adjusted,
+               mutate_fun = periodReturn,
+               periodReturn = "monthly") %>%
+    ungroup() %>%
+  mutate(date = rollback(date, roll_to_first = TRUE))
+
+
+```
+# Visualiaztion of Monthly Returns using plot_time_series()
+```{r}
+returns %>%
+  group_by(symbol) %>%
+  plot_time_series(
+    .date_var = date,
+    .value = monthly.returns,
+    .color_var = symbol,
+    .facet_ncol = 2,
+    .title = "Monthly Returns of Consumer Discrectionary Stocks",
+    .x_lab = "",
+    .y_lab = "Monthly Returns",
+    .legend_show = FALSE
+  )
+```
+
+
+# ggplot for visualization of returns
+```{r}
+returns %>%
+  group_by(symbol) %>%
+  ggplot(aes(date, monthly.returns, color = symbol)) +
+  geom_line()  + scale_y_continuous(labels = scales::percent) +
+  facet_wrap(~ symbol) + geom_smooth(method = "loess", color = "black")  + 
+  theme_tq() + scale_color_tq(theme = "light") +
+  labs(
+    title = "Monthly Returns of Consumer Discretionary Stocks",
+    subtitle = "Periods of volatitlity observed around 2000 & 2020",
+    y = "Monthly Returns",
+    x=""
+  ) + theme(legend.position = "none")
+```
+# Portfolio Contruction - Equal Weights
+```{r}
+w <- rep(1/5, 5)
+port_ret_tbl <- returns %>%
+  group_by(symbol) %>%
+  tq_portfolio(
+    assets_col  = symbol, 
+    returns_col = monthly.returns,
+    weights   = w,
+    col_rename  = "monthly.returns"
+    
+  ) %>%
+  add_column(symbol = "Portfolio", .before = 1)
+```
+# Portfolio Returns Visualization:
+```{r}
+port_ret_tbl %>%
+  plot_time_series(
+    .date_var = date,
+    .value    = monthly.returns,
+    .title    = "Consumer Discretionary Stock Portfolio Returns",
+    .x_lab    = "",
+    .y_lab    = "Monthly Returns" 
+    
+  )
+```
+# ggplot visualization 
+```{r}
+port_ret_tbl %>%
+  ggplot(aes(date, monthly.returns, color = symbol))+
+  geom_line() + scale_color_tq(theme = "light") + theme_tq() +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title    = "Portfolio Returns",
+    subtitle = "High Volatility observed for 2000, 2008, 2020",
+    x= "",
+    y = "Monthly Returns"
+  )
+```
+# Fama-French Factors
+```{r}
+library(frenchdata)
+factors_ff_monthly_raw <- download_french_data("Fama/French 3 Factors")
+factors_ff_monthly <- factors_ff_monthly_raw$subsets$data[[1]] |>
+  transmute(
+    date = floor_date(ymd(str_c(date,"01")),"month"),
+    rf = as.numeric(RF) / 100,
+    mkt_excess = as.numeric(`Mkt-RF`) / 100,
+    smb = as.numeric(SMB) / 100,
+    hml = as.numeric(HML) / 100
+  ) %>%
+  # filter the dates 
+  filter(date >= "1990-01-01")
+
+factors_ff_monthly 
+
+```
+# Portfolio and Fama-French Factors
+```{r}
+port_risk_tbl <- port_ret_tbl %>%
+  left_join(factors_ff_monthly, by = "date") %>%
+  mutate(excess_returns = monthly.returns -rf) %>%
+  select(-monthly.returns)
+
+port_risk_tbl %>%
+  plot_time_series_regression(
+    .date_var = date,
+    .formula = excess_returns ~ mkt_excess + smb + hml,
+    .show_summary = TRUE
+  )
+
+```
+# S&P 500 data 
+```{r}
+# Downloading the S&P 500 data
+market_prices <- tq_get("^GSPC", get = "stock.prices", from = "1990-01-01")
+
+# S&P500 Returns
+market_returns <- market_prices %>%
+  select(symbol, date, adjusted) %>%
+  tq_transmute(
+    select = adjusted,
+    mutate_fun = periodReturn,
+    period     = "monthly",
+    col_rename = "market_ret"
+  ) %>%
+  mutate(
+    date = rollback(date, roll_to_first = "TRUE")
+  )
+
+market_returns
+```
+# Combining the portfolio, fama-french and s&p 500 data
+```{r}
+port_risk_market_tbl <- port_risk_tbl  %>%
+  left_join(market_returns , by = "date") %>%
+  mutate(market_returns = market_ret - rf) %>%
+  select(-rf,-market_ret)
+
+port_risk_market_tbl %>%
+  select(-symbol) %>%
+  plot_time_series_regression(
+    .date_var = date,
+    .formula = excess_returns ~ . -date,
+    .show_summary = TRUE
+  )
+  
+```
+# Beta estimation 
+## Step 1 :  CAPM estimation function
+```{r}
+library(slider)
+# estimate capm
+estimate_capm <- function(data, min_obs = 1) {
+  if (nrow(data) < min_obs) {
+    beta <- as.numeric(NA)
+  } else {
+    fit <- lm(excess_returns ~ mkt_excess + smb+hml+ market_returns, data = data)
+    beta <- as.numeric(fit$coefficients[2])
+  }
+  return(beta)
+}
+# rolling capm estimation
+roll_capm_estimation <- function(data, months, min_obs) {
+  data <- bind_rows(data) |>
+    arrange(date)
+
+  betas <- slide_period_vec(
+    .x = data,
+    .i = data$date,
+    .period = "month",
+    .f = ~estimate_capm(., min_obs),
+    .before = months - 1,
+    .complete = FALSE
+  )
+
+  tibble(
+    month = unique(data$date),
+    beta = betas
+  )
+}
+```
+## Step2 : Implementation
+```{r}
+beta_est_tbl <- port_risk_market_tbl %>%
+  select(symbol, date, mkt_excess:market_returns) %>%
+  mutate(roll_capm_estimation(cur_data(), months = 60, min_obs = 48)) %>%
+  drop_na() %>%
+  select(symbol, date, beta)
+```
+# Visualization of Beta 
+```{r}
+
+beta_est_tbl %>%
+  plot_time_series(
+    .date_var = date,
+    .value = beta,
+    .smooth = F,
+    .title = "Rolling Beta using 5 year Data",
+    .y_lab = "Beta",
+    .x_lab = ""
+    
+  )
+```
+# ggplot for the same
+
+```{r}
+G <- beta_est_tbl %>%
+  ggplot(aes(
+    date, beta
+  )) + geom_line() + scale_y_continuous() + theme_tq() + scale_color_tq(theme = "light") +
+  labs(
+    title = "Rolling Beta using 5 year of data",
+    subtitle = "Consumer Discrectionary portfolio",
+    x = "",
+    y = "Beta"
+  )
+
+ggplotly(G)
+```
+# Individual Stocks and Fama French and Market
+## Step 1: Combining the individual stock returns, fama-french data and s&p 500 returns
+```{r}
+returns_risk_market_tbl <- returns %>%
+  group_by(symbol) %>%
+  left_join(factors_ff_monthly, by = "date") %>%
+  left_join(market_returns, by = "date") %>%
+  mutate(excess_returns = monthly.returns -rf) %>%
+  mutate(market_returns = market_ret - rf) %>%
+  select(-rf, -monthly.returns,-market_ret)
+
+```
+## Step2 : Beta estimation 
+```{r}
+beta_stocks_tbl <- returns_risk_market_tbl %>%
+  mutate(roll_capm_estimation(cur_data(),months = 60, min_obs = 48)) %>%
+  ungroup() %>%
+  drop_na() %>%
+  select(symbol, date, beta)
+
+```
+# Step3: Visualization of Beta 
+```{r}
+
+beta_stocks_tbl %>%
+  plot_time_series(
+    .date_var = date,
+    .value    = beta,
+    .facet_vars = symbol,
+    .facet_ncol = 2,
+    .color_var = symbol,
+    .title = "Rolling Beta using 5 years data",
+    .x_lab = "",
+    .y_lab = "Beta"
+  )
+
+```
+# ggplot for Beta 
+```{r}
+b <- beta_stocks_tbl %>%
+  group_by(symbol) %>%
+  ggplot(aes(date, beta,color = symbol)) +
+  geom_line() + scale_y_continuous() + theme_tq() + scale_color_tq(theme = "light") +
+  labs(
+    title = "Rolling Beta using 5 Years ",
+    subtitle = "Consumer Discrectionary Stocks",
+    y = "Beta",
+    x =""
+  ) 
+
+ggplotly(b)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

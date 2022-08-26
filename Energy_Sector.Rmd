@@ -1,0 +1,305 @@
+---
+title: "Energy_Sector"
+author: "Mandar"
+date: "2022-08-24"
+output: 
+      html_document :
+          code_folding: hide
+          df_print: paged
+          highlight: tango
+          number_sections: yes
+          theme: flatly
+          toc: yes
+          toc_depth: 2
+
+ 
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE,fig.align = "center",
+                        message = FALSE,
+                      warning = FALSE)
+options(tinytex.verbose = TRUE)
+```
+# The energy sector is a category of stocks that relate to producing or supplying energy. The energy sector or industry includes companies involved in the exploration and development of oil or gas reserves, oil and gas drilling, and refining. The energy industry also includes integrated power utility companies such as renewable energy and coal.
+
+# Loading the libraries
+```{r }
+library(tidymodels)
+library(tidyquant)
+library(tidyverse)
+library(scales)
+library(kableExtra)
+library(lubridate)
+library(ggplot2)
+library(plotly)
+library(timetk)
+library(modeltime)
+library(DataExplorer)
+library(correlationfunnel)
+```
+# Data for Energy Sector
+
+
+```{r}
+symbols <- c("XOM","CVX","OXY","COP","SLB") %>% sort()
+
+prices  <-  symbols %>%
+    tq_get(get = "stock.prices",from = "1990-01-01")
+
+ returns <- prices %>%
+    group_by(symbol) %>%
+     tq_transmute( select = adjusted,
+                   mutate_fun = periodReturn,
+                   period     = "monthly") %>%
+     ungroup() %>%
+     mutate(date = rollback(date, roll_to_first = TRUE))
+ 
+ 
+```
+# Visualization of Stock Prices
+```{r}
+prices %>%
+    plot_time_series(
+        .date_var = date,
+        .value    =  adjusted,
+        .facet_vars = symbol,
+        .color_var = symbol,
+        .facet_ncol = 2,
+        .facet_scales = "free_y",
+        .smooth = FALSE,
+        .title = "Energy Stocks",
+        .x_lab = "",
+        .y_lab = "Adjusted Prices($)"
+    )
+
+```
+# ggplot
+```{r}
+prices %>%
+    group_by(symbol) %>%
+    ggplot(aes(date, adjusted, color = symbol)) +
+    geom_line() + scale_y_continuous(labels = scales::dollar) +
+    theme_tq() + scale_color_tq() +
+    facet_wrap(~symbol) +
+    labs(
+        title = "Energy Sector",
+        subtitle = "We observe an upward trend",
+        caption = "Selected Energy Stocks",
+        x ="",
+        y ="Adjusted Price"
+        
+    ) + theme(legend.position = "none")
+```
+# Returns Visualization
+```{r}
+
+returns %>%
+    group_by(symbol) %>%
+    ggplot(aes(date, monthly.returns, color = symbol)) + geom_line() +
+    scale_y_continuous(labels = scales::percent) + theme_tq()  +
+    facet_wrap(~symbol) + labs(
+        title = "Monthly Returns of Energy Stocks",
+        subtitle = "High volatility periods 2000, 2008,2021",
+        y ="Monthly Returns",
+        x =""
+    ) + theme(legend.position = "none")
+```
+```{r}
+returns %>%
+  plot_time_series(
+    .date_var = date,
+    .value    = monthly.returns,
+    .facet_vars = symbol,
+    .facet_ncol = 2,
+    .facet_scales = "free_y",
+    .color_var = symbol,
+    .title = "Monthly returns of Energy Stocks",
+    .x_lab =  "",
+    .y_lab = "Monthly Returns "
+  
+  )
+```
+
+# S&P 500 data 
+```{r}
+# Index Price
+market_prices <- tq_get("^GSPC", from = "1990-01-01")
+# Index Returns
+market_returns <-  market_prices %>%
+    tq_transmute(select = adjusted,
+                 mutate_fun = periodReturn,
+                 period     = "monthly",
+                 col_rename = "SP500") %>%
+    mutate( date = rollback(date, roll_to_first = TRUE))
+
+market_returns
+```
+# Combining stocks returns and index
+```{r}
+stocks_market_tbl <- returns %>%
+    group_by(symbol) %>%
+    left_join(market_returns, by = "date")  %>%
+    ungroup()
+```
+# Portfolio Construction
+```{r}
+# Equal Weights
+w <- rep(1/5, 5)
+port_returns_tbl <- returns %>%
+    group_by(symbol) %>%
+    tq_portfolio(assets_col  = symbol,
+                 returns_col = monthly.returns,
+                 weights     = w) %>%
+    add_column(symbol = "Portfolio", .before = 1)
+port_returns_tbl
+
+```
+```{r}
+port_returns_tbl %>%
+    ggplot(aes(date, portfolio.returns)) +
+    geom_line() + geom_smooth(method = "loess") +
+    scale_y_continuous(labels = scales::percent) +
+    theme_tq() +
+    scale_color_tq() +
+    labs(
+        title = "Portfolio Returns ",
+        subtitle = "Energy Sector ",
+        capition = "  Stocks(CVX,XOM,OXY,SLB,COP)",
+        y = "Monthly Returns",
+        x = ""
+    )
+```
+# Fama-French Factors
+```{r}
+library(frenchdata)
+factors_ff_monthly_raw <- download_french_data("Fama/French 3 Factors")
+factors_ff_monthly <- factors_ff_monthly_raw$subsets$data[[1]] |>
+  transmute(
+    date = floor_date(ymd(str_c(date,"01")),"month"),
+    rf = as.numeric(RF) / 100,
+    mkt_excess = as.numeric(`Mkt-RF`) / 100,
+    smb = as.numeric(SMB) / 100,
+    hml = as.numeric(HML) / 100
+  ) %>%
+  # filter the dates 
+  filter(date >= "1990-01-01")
+
+factors_ff_monthly 
+```
+# Combining Portfolio Returns, Fama-French Factors and S&P 500
+```{r}
+port_market_risk_tbl <- port_returns_tbl %>%
+  left_join(factors_ff_monthly, by = "date") %>%
+  left_join(market_returns, by = "date") %>%
+  mutate(excess_returns = portfolio.returns - rf)%>%
+  mutate(market_excess_returns = SP500 - rf) %>%
+  drop_na() %>%
+  select(symbol, date, excess_returns, market_excess_returns, mkt_excess, smb, hml) 
+```
+# Beta Estimation
+## Step1: CAPM Function
+```{r}
+library(slider)
+# estimate capm
+estimate_capm <- function(data, min_obs = 1) {
+  if (nrow(data) < min_obs) {
+    beta <- as.numeric(NA)
+  } else {
+    fit <- lm(excess_returns ~ mkt_excess + smb+hml+ market_excess_returns, data = data)
+    beta <- as.numeric(fit$coefficients[2])
+  }
+  return(beta)
+}
+# rolling capm estimation
+roll_capm_estimation <- function(data, months, min_obs) {
+  data <- bind_rows(data) |>
+    arrange(date)
+
+  betas <- slide_period_vec(
+    .x = data,
+    .i = data$date,
+    .period = "month",
+    .f = ~estimate_capm(., min_obs),
+    .before = months - 1,
+    .complete = FALSE
+  )
+
+  tibble(
+    month = unique(data$date),
+    beta = betas
+  )
+}
+```
+## Step2: Estimation
+```{r}
+
+beta_roll_tbl <- port_market_risk_tbl %>%
+  mutate(roll_capm_estimation(cur_data(), months = 60, min_obs = 48)) %>%
+  select(symbol, date, beta)  %>%
+  drop_na()
+  
+
+beta_roll_tbl %>%
+  ggplot(aes(date, beta)) +
+  geom_line() + geom_smooth(method = "loess") +
+  scale_y_continuous() + theme_tq() + scale_color_tq() +
+  labs(
+    title = "Rolling Beta using 5 Years",
+    subtitle = "Energy Sector",
+    y = "Beta",
+    x = ""
+  )
+
+```
+#Individual Stocks and Beta Estimation
+
+## Step1: Combining the stocks reutrns, fama-french factors and s&p500 
+```{r}
+ret_market_risk_tbl <- returns %>%
+  group_by(symbol) %>%
+  left_join(factors_ff_monthly, by = "date") %>%
+  left_join(market_returns, by = "date") %>%
+  mutate(excess_returns = monthly.returns -rf) %>%
+  mutate(market_excess_returns = SP500 -rf) %>%
+  ungroup() %>%
+  select(symbol, date, excess_returns, market_excess_returns, mkt_excess,smb, hml)
+
+```
+## Step2: Beta Estimation
+```{r}
+library(slider)
+beta_stock_tbl <- ret_market_risk_tbl %>%
+  group_by(symbol) %>%
+  mutate(roll_capm_estimation(cur_data(), months = 60, min_obs = 48)) %>%
+  select(symbol, date, beta) %>% drop_na() %>%
+  ungroup()
+``` 
+# Beta Visualization
+
+```{r}
+beta_stock_tbl %>%
+  group_by(symbol) %>%
+  ggplot(aes(date, beta, color = symbol)) +
+  geom_line() + scale_y_continuous() + theme_tq() + scale_color_tq() +
+  labs(
+    title = "Rolling Beta using 5 years",
+    subtitle = "Energy Sector",
+    caption = "Selected Energy Stocks",
+    x = "",
+    y = "Beta"
+  )
+```
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -57,7 +57,7 @@ returns_tech <- Tech_Prices %>%
     ungroup() %>%
     mutate(date = rollback(date, roll_to_first = TRUE))
 
-end_date <-  last(returns_tech)
+
 
 
 ```

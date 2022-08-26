@@ -1,0 +1,331 @@
+---
+title: "Real-Estate-Sector"
+author: "Mandar"
+date: "2022-08-26"
+output: 
+    html_document:
+      code_folding: hide
+      df_print: paged
+      highlight: tango
+      number_sections: yes
+      theme: flatly
+      toc: yes
+      toc_depth: 2
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE,fig.align = "center",
+                        message = FALSE,
+                      warning = FALSE)
+options(tinytex.verbose = TRUE)
+```
+
+
+
+# loading the libraries
+```{r }
+library(tidymodels)
+library(tidyquant)
+library(tidyverse)
+library(scales)
+library(kableExtra)
+library(lubridate)
+library(ggplot2)
+library(plotly)
+library(timetk)
+library(modeltime)
+library(DataExplorer)
+library(correlationfunnel)
+```
+#The real estate sector generally includes two different types of investments related to real estate. Some stocks in the sector are responsible for developing new real estate projects and then managing them by obtaining tenants for various spaces within the project property. In addition, most real estate investment trusts, which are special tax-favored business entities that operate in various areas of the real estate industry, get counted as within the real estate sector.
+
+# Data For real Estate Sector
+```{r}
+#tickers
+symbols <- c("WELL","WY","LPX","DRE","PEAK") %>% sort()
+# prices
+# stock prices
+prices  <- symbols %>%
+    tq_get(get = "stock.prices", from = "1990-01-01")
+# returns
+returns <- prices %>%
+    group_by(symbol) %>%
+    tq_transmute(
+        select = adjusted,
+        mutate_fun = periodReturn,
+        period     = "monthly",
+    ) %>%
+    ungroup() %>%
+    mutate(date = rollback(date, roll_to_first = TRUE))
+returns
+
+
+```
+# Visualization of Returns
+```{r}
+returns %>%
+    group_by(symbol) %>%
+    ggplot(aes(date, monthly.returns, color = symbol)) +
+    geom_line() + scale_y_continuous(labels = scales::percent) +
+    theme_tq() + facet_wrap(~symbol) + 
+    labs(
+        title = "Monthly returns",
+        subtitle = "Real Estate Sector",
+        x = "",
+        y = "Monthly Returns"
+   )
+```
+#timetk
+```{r}
+returns %>%
+    plot_time_series(
+        .date_var = date,
+        .value = monthly.returns,
+        .facet_vars = symbol,
+        .color_var = symbol,
+        .facet_ncol = 2,
+        .title = "Returns of Real Estate Sector Stocks",
+        .x_lab = "",
+        .y_lab = "Monthly Returns",
+        .smooth_size = 0.5
+    )
+```
+#Stock Prices Visualization
+
+```{r}
+prices %>%
+    group_by(symbol) %>%
+    plot_time_series(
+        .date_var = date,
+        .value = adjusted,
+        .color_var = symbol,
+        .facet_ncol = 2,
+        .facet_scales = "free_y",
+        .smooth = FALSE,
+        .title = "Stock Prices Real Estate Sector",
+        .x_lab = "",
+        .y_lab = "Adjusted Prices",
+        .legend_show = FALSE
+    )
+```
+#timetk
+```{r}
+
+prices %>%
+    plot_time_series(
+        .date_var = date,
+        .value = adjusted,
+        .facet_vars = symbol,
+        .color_var = symbol,
+        .facet_ncol = 2,
+        .title = "Stock Prices Real Estate Sector",
+        .x_lab = "",
+        .y_lab = "Adjusted Stock Prices($)",
+        .smooth = FALSE
+    )
+```
+
+#Portfolio Construction
+
+```{r}
+# Weights Allocation
+w <- rep(1/5, 5)
+# Portfolio creation
+port_ret_tbl <- returns %>%
+    tq_portfolio(
+        assets_col = symbol, 
+        returns_col = monthly.returns,
+        weights = w
+    ) %>%
+    mutate(date = rollback(date, roll_to_first = TRUE)) %>%
+    add_column(symbol ="Portfolio", .before = 1)
+
+#Visualization
+port_ret_tbl  %>%
+    ggplot(aes(date, portfolio.returns)) +
+    geom_line() + geom_smooth(method = "loess") +
+    scale_y_continuous(labels = scales::percent) + theme_tq() + scale_color_tq() +
+    labs(
+        title = "Portfolio Returns",
+        subtitle = "Real Estate Sector",
+        y = "Returns",
+        x = ""
+    )
+```
+#timetk
+```{r}
+port_ret_tbl %>%
+    plot_time_series(
+        .date_var = date,
+        .value = portfolio.returns,
+        .title = "Portfolio Returns Real Estate Sector",
+        .x_lab = "",
+        .y_lab = "Returns"
+    )
+```
+
+#S&P500
+```{r}
+market_prices <- tq_get("^GSPC", get = "stock.prices",from = "1990-01-01")
+market_returns <-  market_prices %>%
+    tq_transmute(select = adjusted,
+                 mutate_fun = periodReturn,
+                 period = "monthly",
+                 col_rename = "market_ret") %>%
+    mutate(date = rollback(date, roll_to_first = TRUE))
+market_returns
+```
+#FAMA-FRENCH FACTORS
+```{r}
+library(frenchdata)
+factors_ff_monthly_raw <- download_french_data("Fama/French 3 Factors")
+factors_ff_monthly <- factors_ff_monthly_raw$subsets$data[[1]] |>
+  transmute(
+    date = floor_date(ymd(str_c(date,"01")),"month"),
+    rf = as.numeric(RF) / 100,
+    mkt_excess = as.numeric(`Mkt-RF`) / 100,
+    smb = as.numeric(SMB) / 100,
+    hml = as.numeric(HML) / 100
+  ) %>%
+  # filter the dates 
+  filter(date >= "1990-01-01")
+
+factors_ff_monthly
+```
+#Combining all the data
+```{r}
+port_risk_market_tbl <- port_ret_tbl %>%
+    left_join(factors_ff_monthly, by = "date") %>%
+    left_join(market_returns, by = "date") %>%
+    mutate(excess_returns = portfolio.returns - rf) %>%
+    mutate(market_excess_returns = market_ret - rf) %>%
+    select(symbol, date, mkt_excess, smb, hml, excess_returns, market_excess_returns)
+port_risk_market_tbl
+```
+#Beta Estimation
+## Step1: CAPM Function
+```{r}
+library(slider)
+# estimate capm
+estimate_capm <- function(data, min_obs = 1) {
+  if (nrow(data) < min_obs) {
+    beta <- as.numeric(NA)
+  } else {
+    fit <- lm(excess_returns ~ mkt_excess + smb+hml+ market_excess_returns, data = data)
+    beta <- as.numeric(fit$coefficients[2])
+  }
+  return(beta)
+}
+# rolling capm estimation
+roll_capm_estimation <- function(data, months, min_obs) {
+  data <- bind_rows(data) |>
+    arrange(date)
+
+  betas <- slide_period_vec(
+    .x = data,
+    .i = data$date,
+    .period = "month",
+    .f = ~estimate_capm(., min_obs),
+    .before = months - 1,
+    .complete = FALSE
+  )
+
+  tibble(
+    month = unique(data$date),
+    beta = betas
+  )
+}
+```
+##Step2: Estimation
+```{r}
+beta_port_tbl <- port_risk_market_tbl %>%
+    mutate(roll_capm_estimation(cur_data(), months = 60, min_obs = 48)) %>%
+    drop_na() %>%
+    select(symbol, date, beta)
+
+beta_port_tbl
+```
+##Step3: Beta Visualization
+```{r}
+beta_port_tbl %>%
+    ggplot(aes(date, beta)) +
+    geom_line() + geom_smooth(method = "loess") +
+    scale_y_continuous() + theme_tq() + scale_color_tq() +
+    labs(
+        title = "Rolling Beta using 5 years data",
+        subtitle = "Real Estate Sector",
+        caption = "Stocks(DRE, LPX, PEAK, WELL, WY)",
+        x ="",
+        y="Beta"
+)
+```
+#timetk
+```{r}
+
+beta_port_tbl %>%
+    plot_time_series(
+        .date_var = date,
+        .value = beta,
+        .title = "Rolling Beta Estimates Real Estate Sector",
+        .x_lab = "",
+        .y_lab = "Beta"
+    )
+```
+
+# Stock Returns, Fama-French and S&P500
+```{r}
+
+# combining the data
+returns_risk_market_tbl <- returns %>%
+    group_by(symbol) %>%
+    left_join(factors_ff_monthly, by = "date") %>%
+    left_join(market_returns, by = "date") %>%
+    mutate(excess_returns = monthly.returns -rf) %>%
+    mutate(market_excess_returns = market_ret - rf) %>%
+    ungroup() %>%
+    drop_na() %>%
+    select(symbol, date, excess_returns, market_excess_returns, mkt_excess, smb, hml)
+returns_risk_market_tbl
+```
+##Beta Estimation
+```{r}
+beta_stocks_tbl <- returns_risk_market_tbl %>%
+    group_by(symbol) %>%
+    mutate(roll_capm_estimation(cur_data(), months = 60, min_obs = 48)) %>%
+    ungroup() %>%
+    drop_na() %>%
+    select(symbol, date, beta)
+beta_stocks_tbl
+```
+##Beta Visualization
+```{r}
+beta_stocks_tbl %>%
+    ggplot(aes(date, beta, color = symbol)) +
+    geom_line() + scale_y_continuous() +
+    theme_tq() +
+    labs(
+        title = "Rolling beta with 5 years of data",
+        subtitle = "Real Estate Sector ",
+        capition = "stocks(DRE, WELL,WY, LPX, PEAK)",
+        y ="Beta",
+        x =""
+    ) 
+```
+###timetk
+```{r}
+beta_stocks_tbl %>%
+    plot_time_series(
+        .date_var = date,
+        .value = beta,
+        .color_var = symbol,
+        .smooth = FALSE,
+        .title = "Rolling Beta for Stocks (Real Estate Sector)",
+        .x_lab = "",
+        .y_lab = "Beta"
+    )
+```
+
+
+
+
+
