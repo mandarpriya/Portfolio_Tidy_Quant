@@ -154,12 +154,11 @@ factors_ff_monthly
 ```
 # Combining all the data
 ```{r}
-port_risk_market_tbl <- port_ret_tbl %>%
+port_risk_tbl <- port_ret_tbl %>%
     left_join(factors_ff_monthly, by = "date") %>%
     left_join(market_returns, by = "date") %>%
     mutate(excess_returns = portfolio.returns - rf) %>%
-    mutate(market_excess_returns = market_ret - rf) %>%
-    select(symbol, date, mkt_excess, smb, hml, excess_returns, market_excess_returns)
+    select(symbol, date, mkt_excess, smb, hml, excess_returns)
 ```
 # Beta Estimation 
 ## step1:CAPM function
@@ -170,7 +169,7 @@ estimate_capm <- function(data, min_obs = 1) {
   if (nrow(data) < min_obs) {
     beta <- as.numeric(NA)
   } else {
-    fit <- lm(excess_returns ~ mkt_excess + smb+hml+ market_excess_returns, data = data)
+    fit <- lm(excess_returns ~ mkt_excess + smb+hml data = data)
     beta <- as.numeric(fit$coefficients[2])
   }
   return(beta)
@@ -227,18 +226,17 @@ beta_port_tbl %>%
         
     )
 ```
-# # Stock Returns , Fama-French and S&P 500
+# # Stock Returns , Fama-French 
 ```{r}
 # combining the data
-returns_risk_market_tbl <- returns %>%
+returns_risk_tbl <- returns %>%
     group_by(symbol) %>%
     left_join(factors_ff_monthly, by = "date") %>%
     left_join(market_returns, by = "date") %>%
     mutate(excess_returns = monthly.returns -rf) %>%
-    mutate(market_excess_returns = market_ret - rf) %>%
     ungroup() %>%
     drop_na() %>%
-    select(symbol, date, excess_returns, market_excess_returns, mkt_excess, smb, hml)
+    select(symbol, date, excess_returns mkt_excess, smb, hml)
 ```
 ## Beta Estimation for Stocks
 ```{r}
