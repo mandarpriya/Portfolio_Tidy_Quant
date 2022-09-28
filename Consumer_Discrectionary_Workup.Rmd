@@ -158,34 +158,16 @@ port_risk_tbl %>%
   )
 
 ```
-# S&P 500 data 
-```{r}
-# Downloading the S&P 500 data
-market_prices <- tq_get("^GSPC", get = "stock.prices", from = "1990-01-01")
 
-# S&P500 Returns
-market_returns <- market_prices %>%
-  select(symbol, date, adjusted) %>%
-  tq_transmute(
-    select = adjusted,
-    mutate_fun = periodReturn,
-    period     = "monthly",
-    col_rename = "market_ret"
-  ) %>%
-  mutate(
-    date = rollback(date, roll_to_first = "TRUE")
-  )
-
-market_returns
 ```
 # Combining the portfolio, fama-french and s&p 500 data
 ```{r}
-port_risk_market_tbl <- port_risk_tbl  %>%
+port_risk_tbl <- port_risk_tbl  %>%
   left_join(market_returns , by = "date") %>%
   mutate(market_returns = market_ret - rf) %>%
   select(-rf,-market_ret)
 
-port_risk_market_tbl %>%
+port_risk_tbl %>%
   select(-symbol) %>%
   plot_time_series_regression(
     .date_var = date,
@@ -203,7 +185,7 @@ estimate_capm <- function(data, min_obs = 1) {
   if (nrow(data) < min_obs) {
     beta <- as.numeric(NA)
   } else {
-    fit <- lm(excess_returns ~ mkt_excess + smb+hml+ market_returns, data = data)
+    fit <- lm(excess_returns ~ mkt_excess + smb+hml, data = data)
     beta <- as.numeric(fit$coefficients[2])
   }
   return(beta)
@@ -231,7 +213,7 @@ roll_capm_estimation <- function(data, months, min_obs) {
 ## Step2 : Implementation
 ```{r}
 beta_est_tbl <- port_risk_market_tbl %>%
-  select(symbol, date, mkt_excess:market_returns) %>%
+  select(symbol, date, mkt_excess:) %>%
   mutate(roll_capm_estimation(cur_data(), months = 60, min_obs = 48)) %>%
   drop_na() %>%
   select(symbol, date, beta)
@@ -272,10 +254,8 @@ ggplotly(G)
 returns_risk_market_tbl <- returns %>%
   group_by(symbol) %>%
   left_join(factors_ff_monthly, by = "date") %>%
-  left_join(market_returns, by = "date") %>%
   mutate(excess_returns = monthly.returns -rf) %>%
-  mutate(market_returns = market_ret - rf) %>%
-  select(-rf, -monthly.returns,-market_ret)
+  select(-rf, -monthly.returns)
 
 ```
 ## Step2 : Beta estimation 
