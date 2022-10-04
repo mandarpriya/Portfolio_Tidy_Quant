@@ -1,0 +1,350 @@
+---
+title: "Tech-Sector"
+author: "Mandar"
+date: "2022-09-28"
+output:
+  html_document:
+    code_folding: show
+    df_print: paged
+    highlight: tango
+    number_sections: yes
+    theme: flatly
+    toc: yes
+    toc_depth: 2
+---
+
+```{r }
+knitr::opts_chunk$set(
+    echo = TRUE,
+    message = FALSE,
+    warning = FALSE,
+    out.width = "200%",
+    out.height = "500px",
+    fig.pos = "center",
+    dpi = 300)
+```
+
+# libraries
+
+```{r }
+library(tidyverse)
+library(lubridate)
+library(tidyquant)
+library(plotly)
+library(broom)
+library(tidymodels)
+
+```
+
+# Getting the data for Technology Sector
+we select the following the comopanies 
+#Apple(AAPL) #Microsoft(MSFT),IBM,Adobe(ADBE),Oracle(ORCL) 
+
+```{r }
+# Tickers
+symbols <- c("AAPL","MSFT","IBM","ORCL","ADBE") |> sort()
+
+# Using the tidyquant for the data
+prices <- symbols |>  tq_get(get = "stock.prices", from = "1990-01-01")
+
+prices
+```
+# Let us visualize the stock prices(adjusted prices) using ggplot
+```{r}
+prices |> 
+  group_by(symbol) |> 
+  ggplot(aes(date,adjusted, color = symbol )) +
+  geom_line() + scale_y_continuous(labels = scales::dollar) +
+  theme_tq() + scale_colour_tq(theme = "dark") +
+  labs(
+    title = "Stock Prices",
+    subtitle = "Tech Sector",
+    caption = "Selected Stocks",
+    x = "",
+    y = "Adjusted"
+  )
+```
+# for interactive plot we can go for plotly
+```{r}
+p <- prices |> 
+  group_by(symbol) |> 
+  ggplot(aes(date,adjusted, color = symbol )) +
+  geom_line() + scale_y_continuous(labels = scales::dollar) +
+  theme_tq() + scale_colour_tq(theme = "dark") +
+  labs(
+    title = "Stock Prices",
+    subtitle = "Tech Sector",
+    caption = "Selected Stocks",
+    x = "",
+    y = "Adjusted"
+  )
+
+ggplotly(p)
+```
+# Monthly Returns: 
+
+```{r}
+returns_tbl <- prices |> 
+  group_by(symbol) |> 
+  select(symbol, date, adjusted) |> 
+  tq_transmute(
+    select     = adjusted,
+    mutate_fun = periodReturn,
+    period     = "monthly"
+  ) |> 
+  ungroup() |> 
+  # we need from the starting of the month
+  mutate(date = rollback(date, roll_to_first = TRUE)) 
+returns_tbl
+  
+```
+# Visualiaztion on Monthly returns
+```{r}
+r <- returns_tbl |> 
+  group_by(symbol) |> 
+  ggplot(aes(date, monthly.returns, color = symbol)) +
+  geom_line() + facet_wrap(~ symbol) +
+  theme_tq() + scale_y_continuous(labels = scales::percent) +
+  labs(
+    title =  "Monthly Returns Tech Stocks",
+    subtitle = "Periods of high Volatility around the year 1998-2000",
+    caption  = "Selected Stocks",
+    x = "",
+    y= "Returns"
+    
+  )
+r
+```
+
+```{r}
+ggplotly(r)
+
+```
+# Fama-French factors from the K.French site 
+# I consider 3 factors monthly data. Special appreciation to Christoph Scheuch, Stefan Voigt, and Patrick Weiss for shring their valuable insights in the book "Tidyfinance with R"
+```{r}
+library(frenchdata)
+factors_ff_monthly_raw <- download_french_data("Fama/French 3 Factors")
+factors_ff_monthly <- factors_ff_monthly_raw$subsets$data[[1]] |>
+  transmute(
+    date = floor_date(ymd(str_c(date, "01")), "month"),
+    rf = as.numeric(RF) / 100,
+    mkt_excess = as.numeric(`Mkt-RF`) / 100,
+    smb = as.numeric(SMB) / 100,
+    hml = as.numeric(HML) / 100
+  ) |>
+  filter(date >= "1990-01-01")
+
+factors_ff_monthly
+```
+# Step1:Combining the returns of the stocks with the fama-french factors 
+```{r}
+returns_risk_tbl <- returns_tbl %>%
+  group_by(symbol) |> 
+  left_join(factors_ff_monthly, by = "date") |> 
+  mutate(excess_returns = monthly.returns -rf) |> 
+  select(symbol, date, excess_returns:mkt_excess)
+
+returns_risk_tbl
+  
+```
+# Step 2.1 : Rolling CAPM Function
+```{r}
+#  capm estimation
+estimate_capm <- function(data, min_obs = 1) {
+  if (nrow(data) < min_obs) {
+    beta <- as.numeric(NA)
+  } else {
+    fit <- lm(excess_returns ~ mkt_excess + hml + smb , data = data)
+    # note that we take into account the coefficient of mkt_excess
+    beta <- as.numeric(coefficients(fit)[2])
+  }
+  return(beta)
+}
+
+# rolling capm estimation
+roll_capm_estimation <- function(data, months, min_obs) {
+  data <- data |>
+    arrange(date)
+
+  betas <- slide_period_vec(
+    .x = data,
+    .i = data$date,
+    .period = "month",
+    .f = ~ estimate_capm(., min_obs),
+    .before = months - 1,
+    .complete = FALSE
+  )
+
+  return(tibble(
+    month = unique(data$date),
+    beta = betas
+  ))
+}
+```
+# Step 2.2 Beta Estimation
+```{r}
+# 
+library(slider)
+
+beta_estimation_tbl <- returns_risk_tbl |> 
+  mutate(roll_capm_estimation(cur_data(), months = 60, min_obs = 48)) |> 
+  select(symbol, date, beta) |> 
+  drop_na() |> 
+  ungroup()
+    
+beta_estimation_tbl
+  
+   
+```
+# Beta Visualization
+
+```{r}
+
+beta_estimation_tbl |> 
+  group_by(symbol) |> 
+  ggplot(aes(date, beta, color = symbol)) +
+  geom_line() + theme_tq() + 
+  scale_color_tq() + scale_y_continuous() +
+  labs(
+    title = "Monthly Beta Estimates for Tech Stocks using 5 years data",
+    subtitle = "Apple,IBM,Microsoft,Adobe,Oracle",
+    y ="Beta",
+    x = ""
+  )
+
+```
+# using timetk we can get an interactive graph
+
+```{r}
+library(timetk)
+beta_estimation_tbl  |> 
+  plot_time_series(
+    .date_var = date,
+    .value    = beta,
+    .color_var = symbol,
+    .smooth = FALSE,
+    .title = "Monthly Beta Estimates using 5 year data",
+    .x_lab = "",
+    .y_lab = "Beta",
+    .legend_show = FALSE
+    
+  )
+```
+# Creating Portfolio :- 
+## Step 1 Equal Weight Allocation Portfolio
+```{r}
+
+# number of assets
+n <- length(symbols)
+
+# Weight of the assets
+w <- rep(1,n)/n
+
+# Equal Weighted Portfolio
+
+port_tbl <- returns_tbl |> 
+  group_by(symbol) |> 
+  tq_portfolio(
+    assets_col = symbol, 
+    returns_col = monthly.returns,
+    weights = w,
+    rebalance_on = "years"
+  )
+
+
+port_tbl |> 
+  ggplot(aes(date, portfolio.returns)) +
+  geom_bar(stat = "identity", fill = palette_light()[[1]]) +
+  geom_smooth(method = "lm") + scale_y_continuous(labels = scales::percent) +
+  theme_tq() + scale_color_tq(theme = "dark") +
+  labs(
+    title = "Portfolio Returns",
+    subtitle = "Equal Weight allocation(apple,ibm,microsoft,oracle,adobe)",
+    caption =  "Above Zero Trend, it means positive returns ",
+    x = "",
+    y = "Portfolio Returns"
+  )
+
+```
+```{r}
+port_tbl |> 
+  plot_time_series(
+    .date_var = date,
+    .value = portfolio.returns,
+    .title = "Portfolio Returns for equal weight allocation",
+    .smooth_degree = 0,
+    .x_lab = "",
+    .y_lab = "Portfolio_Returns"
+  )
+```
+```{r}
+port_tbl |> 
+  ggplot(aes(date, portfolio.returns)) +
+  geom_line() + geom_smooth(method = "lm") +
+  scale_y_continuous(labels = scales::percent) + theme_tq() +
+  scale_color_tq(theme = "dark") +
+  labs(
+    title = "Equal-Weighted Portfolio Returns of Tech Stocks",
+    subtitle = "apple,ibm,microsfot,oracle,adobe",
+    caption = "non zero trend observed",
+    x = "",
+    y = "Portfolio Returns"
+  )
+```
+# Portfolio and Fama-French Factors
+```{r}
+port_risk_tbl <- port_tbl %>%
+  left_join(factors_ff_monthly, by = "date") |> 
+  mutate(excess_returns = portfolio.returns -rf) |> 
+  select(date, excess_returns:mkt_excess)
+```
+# Beta Estimation 
+```{r}
+beta_port_tbl <- port_risk_tbl %>%
+  select(date, excess_returns:mkt_excess) |> 
+  mutate(roll_capm_estimation(cur_data(), months = 60, min_obs = 48)) |> 
+  select(date, beta) |> 
+  drop_na()
+```
+# Portfolio Beta Visualization
+```{r}
+b <- beta_port_tbl |> 
+  ggplot(aes(date, beta)) +
+  geom_line() + theme_tq()+ scale_color_tq(theme = "dark") +
+  labs(
+    title = "Monthly Beta Estimates using 5 years data",
+    subtitle = "More Volatile Portfolio in comparison to market",
+    caption  = "Naive Portfolio (apple,ibm, microsoft,oracle,adobe)",
+    x = "",
+    y = "Beta"
+    
+  )
+
+b
+```
+```{r}
+ggplotly(b)
+```
+
+```{r}
+
+beta_port_tbl |> 
+  plot_time_series(
+    .date_var = date,
+    .value = beta,
+    .smooth = FALSE,
+    .title = "Monthly Beta Estimates for Naive Portfolio of selected stocks",
+    .y_lab = "Beta",
+    .x_lab = ""
+  )
+```
+
+
+
+
+
+
+
+
+

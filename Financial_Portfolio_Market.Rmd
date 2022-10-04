@@ -1,0 +1,280 @@
+---
+title: "Financial_Sector"
+author: "Mandar"
+date: "2022-09-30"
+output:
+  html_document:
+    code_folding: show
+    df_print: paged
+    highlight: tango
+    number_sections: yes
+    theme: flatly
+    toc: yes
+    toc_depth: 2
+---
+
+```{r setup}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    message = FALSE,
+    warning = FALSE,
+    out.width = "200%",
+    out.height = "500px",
+    fig.pos = "center",
+    dpi = 300)
+```
+
+# libraries
+
+```{r }
+library(tidyverse)
+library(lubridate)
+library(tidyquant)
+library(plotly)
+library(broom)
+library(tidymodels)
+library(slider)
+library(scales)
+```
+# Financial Sector: We consider the following banking stocks for our analysis
+
+JP Morgan (JPM)   
+Citi (C)
+Bank of America (BAC)
+Wells Fargo & compoany (WFC)
+US Bank Corp (USB)
+
+
+```{r }
+symbols <- c("JPM","C","BAC","WFC","USB") |>  sort()
+
+# downloading the data from yahoo finance
+prices <- symbols |> 
+    tq_get(get = "stock.prices", from = "1990-01-01")
+
+prices  
+    
+```
+# Visualization of stock prices
+
+```{r}
+prices |> 
+    group_by(symbol) |> 
+    ggplot(aes(date, adjusted, color = symbol)) +
+    geom_line() + facet_wrap(~ symbol) + scale_y_continuous(labels = scales::dollar) +
+    theme_tq() + scale_color_tq(theme = "dark")  + theme(legend.position = "none") +
+    labs(
+        title = "Stock prices of Banking-Stocks ",
+        x = "",
+        y= "Adjusted Stock Price"
+    )
+```
+# Monthly Returns :
+
+```{r}
+returns_tbl <- prices |> 
+    group_by(symbol) |> 
+    select(symbol, date, adjusted) |> 
+    tq_transmute(
+        select = adjusted,
+        mutate_fun = periodReturn,
+        period     = "monthly"
+    ) |> 
+    ungroup() |> 
+    mutate(date = rollback(date, roll_to_first = TRUE))
+
+returns_tbl
+```
+# Visualization of monthly returns
+```{r}
+returns_tbl |> 
+    group_by(symbol) |> 
+    ggplot(aes(date, monthly.returns, color = symbol)) +
+    geom_line() + facet_wrap(~symbol) +
+    scale_y_continuous(labels = scales::percent) + theme_tq() +
+    scale_color_tq(theme = "dark") + theme(legend.position = "none") +
+    labs(
+        title = "Monthly Returns of Banking Stocks",
+        subtitle = "Periods of high Volatitlity : 2008-2010",
+        x = "",
+        y = "Returns"
+    )
+
+
+```
+# Fama-French Factors
+```{r}
+library(frenchdata)
+factors_ff_monthly_raw <- download_french_data("Fama/French 3 Factors")
+factors_ff_monthly <- factors_ff_monthly_raw$subsets$data[[1]] |>
+  transmute(
+    date = floor_date(ymd(str_c(date, "01")), "month"),
+    rf = as.numeric(RF) / 100,
+    mkt_excess = as.numeric(`Mkt-RF`) / 100,
+    smb = as.numeric(SMB) / 100,
+    hml = as.numeric(HML) / 100
+  ) |>
+  filter(date >= "1990-01-01")
+
+factors_ff_monthly
+```
+# Combining the stock returns and the fama-french data
+```{r}
+
+returns_risk_tbl <- returns_tbl |> 
+    group_by(symbol) |> 
+    left_join(factors_ff_monthly, by = "date") |> 
+    mutate(excess_returns = monthly.returns -rf) |> 
+    ungroup() |> 
+    select(symbol, date, excess_returns:mkt_excess)
+
+returns_risk_tbl
+```
+# Beta estimation 
+## function for capm
+
+```{r}
+
+library(slider)
+#  capm estimation
+estimate_capm <- function(data, min_obs = 1) {
+  if (nrow(data) < min_obs) {
+    beta <- as.numeric(NA)
+   
+  } else {
+    fit <- lm(excess_returns ~ mkt_excess + hml + smb , data = data)
+    # note that we take into account the coefficient of mkt_excess
+    beta <- as.numeric(coefficients(fit)[2])
+    
+  }
+  return(beta)
+}
+
+# rolling capm estimation
+roll_capm_estimation <- function(data, months, min_obs) {
+  data <- data |>
+    arrange(date)
+
+  betas <- slide_period_vec(
+    .x = data,
+    .i = data$date,
+    .period = "month",
+    .f = ~ estimate_capm(., min_obs),
+    .before = months - 1,
+    .complete = FALSE
+  )
+  
+  return(tibble(
+    month = unique(data$date),
+    beta = betas
+   
+  ))
+}
+
+
+
+```
+
+```{r}
+beta_estimation_tbl <- returns_risk_tbl |> 
+    group_by(symbol) |> 
+    mutate(roll_capm_estimation(cur_data(), months = 60, min_obs = 48)) |> 
+    ungroup() |> 
+    select(symbol, date, beta) |> 
+    drop_na()
+beta_estimation_tbl
+
+```
+# Visualization of Beta for the stock returns
+```{r}
+library(timetk)
+beta_estimation_tbl |> 
+    plot_time_series(
+        .color_var  = symbol,
+        .date_var   = date,
+        .value      = beta,
+        .smooth     = FALSE,
+        .title      = "Monthly Beta Estimates using  5 years data",
+        .y_lab      = "Beta",
+        .x_lab      = ""
+    )
+```
+# Beta for all the stocks is well above zero, thus shows that these are affected by the market factors.
+```{r}
+returns_tbl |> 
+    group_by(symbol) |> 
+    ggplot(aes(monthly.returns, fill = symbol)) +
+    geom_density() + facet_wrap(~ symbol)
+```
+
+# Portfolio Construction
+```{r}
+n <- length(symbols)
+# Weights
+w <- rep(1,n)/n
+
+port_tbl <- returns_tbl |> 
+    group_by(symbol) |> 
+    tq_portfolio(
+        assets_col  = symbol,
+        returns_col = monthly.returns,
+        weights     = w,
+        rebalance_on = "years"
+    )
+ 
+
+```
+```{r}
+
+port_tbl |> 
+    plot_time_series(
+        .date_var = date,
+        .value    = portfolio.returns,
+        .smooth   = TRUE,
+        .smooth_color = palette_green()[[1]],
+        .smooth_degree = 0
+    )
+```
+```{r}
+port_tbl |> 
+    ggplot(aes(portfolio.returns)) +
+    geom_density()
+```
+
+# Combining the portfolio returns with the Fama-French Factors
+```{r}
+port_risk_tbl <- port_tbl |> 
+    left_join(factors_ff_monthly, by = "date") |> 
+    mutate(excess_returns = portfolio.returns -rf) |> 
+    select(date, excess_returns:mkt_excess) 
+port_risk_tbl
+```
+# Beta estimation
+```{r}
+beta_port_tbl <- port_risk_tbl |> 
+    mutate(roll_capm_estimation(cur_data(),months = 60, min_obs = 48)) |> 
+    select(date, beta) |> 
+    drop_na()
+
+beta_estimation_tbl
+```
+```{r}
+
+beta_port_tbl |> 
+    plot_time_series(
+        .date_var = date,
+        .value = beta,
+        .title = "Montly Beta Estimates for Finacial-Sector Portfolio",
+        .y_intercept = 0,
+        .y_intercept_color = palette_light()[[2]],
+        .smooth = FALSE,
+        .x_lab = "",
+        .y_lab = "Beta"
+    )
+```
+# Thus what we observe is that Beta is > 1, so it is more volatile
+
+
+
+
+

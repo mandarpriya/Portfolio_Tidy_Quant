@@ -1,0 +1,320 @@
+---
+title: "Health-Care"
+author: "Mandar"
+date: "2022-09-30"
+output: 
+    html_document:
+        theme : united
+        code_folding : hide
+        df_print: paged
+        highlight: tango
+        number_sections: TRUE
+        toc: yes
+        toc_depth: 2
+        smooth_scroll: TRUE
+        
+---
+
+```{r setup}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    message = FALSE,
+    warning = FALSE,
+    out.width = "200%",
+    out.height = "500px",
+    fig.pos = "center",
+    dpi = 300)
+```
+
+# loading the libraries
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(tidyquant)
+library(plotly)
+library(broom)
+library(tidymodels)
+library(slider)
+library(scales)
+library(timetk)
+
+```
+
+# Health-Care : We select a blend of Pharmaceutical and Health-Care companies
+Pfizer(PFE) 
+Johnson&Johnson(JNJ)
+Bristol-Myers Squibb (BMY)
+CVS Health Corporation (CVS)
+Abbott Laboratories   (ABT)
+
+```{r}
+# tickers
+symbols <- c("PFE","ABT","BMY","CVS","JNJ") |> sort()
+
+prices <- symbols |> 
+    tq_get(get = "stock.prices", from = "1990-01-01")
+
+prices 
+```
+# Visualization of Prices
+```{r}
+prices |> 
+    group_by(symbol) |>
+    ggplot(aes(date, adjusted, color = symbol)) +
+    geom_line() + scale_y_continuous(labels = scales::dollar) + theme_tq() +
+    scale_color_tq(theme = "dark") + 
+    labs(
+        title = " Health-Care Stocks Adjusted Prices",
+        subtitle = "rising Trend",
+        x = "",
+        y = "Adjusted"
+    )
+``` 
+# interactive plot for the stock prices
+```{r}
+library(timetk)
+prices |> 
+    plot_time_series(
+        .date_var = date,
+        .value    = adjusted,
+        .color_var = symbol,
+        .smooth = FALSE,
+        .y_lab = "adjusted prices($)",
+        .x_lab = "",
+        .title = "Adjusted Stock Prices of Health-Care Companies",
+        .legend_show = FALSE
+        
+    )
+```
+# Monthly Returns :
+```{r}
+returns_tbl <- prices |> 
+    group_by(symbol) |> 
+    select(symbol, date, adjusted) |> 
+    tq_transmute(
+        select = adjusted,
+        mutate_fun = periodReturn,
+        period     = "monthly"
+    ) |> 
+    ungroup() |> 
+    mutate(date = rollback(date, roll_to_first = TRUE))
+returns_tbl
+```
+
+# Visualization of returns- 
+## Interactive Plot
+
+```{r}
+returns_tbl |> 
+    plot_time_series(
+        .date_var = date,
+        .value    = monthly.returns,
+        .color_var = symbol,
+        .y_lab = "Returns(%)" ,
+        .facet_vars = symbol,
+        .facet_ncol = 2,
+        .facet_scales = "free_y",
+        .smooth = FALSE,
+        .title = "Monthly Returns for Health-Care Stocks",
+        .y_intercept = 0,
+        .y_intercept_color = palette_green()[[1]],
+        .legend_show = FALSE
+    )
+
+```
+
+## GGPLOT Visualization
+
+```{r}
+returns_tbl |> 
+    group_by(symbol) |> 
+    ggplot(aes(date, monthly.returns, color = symbol)) +
+    geom_line() + facet_wrap(~symbol) +
+    scale_y_continuous(labels = scales::percent) +
+    theme_tq() + scale_color_tq(theme = "dark")  + theme(legend.position = "none") +
+    labs(
+        title = "Monthly Returns",
+        subtitle = "High Volatility periods 2000, 2008",
+        x ="",
+        y = "Returns"
+    )
+    
+```
+
+
+# Portfolio Construction: Equal Weight Allocation
+
+```{r}
+# number of assets
+n <- length(symbols)
+
+# weight allocation
+w <- rep(1,n)/n
+
+port_tbl <- returns_tbl |> 
+    tq_portfolio(
+        assets_col     = symbol,
+        returns_col    = monthly.returns,
+        weights        = w,
+        rebalance_on   = "years"
+    )
+port_tbl
+```
+
+
+# portfolio visualization
+
+```{r}
+port_tbl |> 
+    plot_time_series(
+        .date_var = date,
+        .value    = portfolio.returns,
+        .title = "Portfolio Returns Health-Care Sector"
+    )
+
+```
+# Fama-French Factors: 3 Factors considerd with Monthly Frequency
+```{r}
+library(frenchdata)
+factors_ff_monthly_raw <- download_french_data("Fama/French 3 Factors")
+factors_ff_monthly <- factors_ff_monthly_raw$subsets$data[[1]] |>
+  transmute(
+    date = floor_date(ymd(str_c(date, "01")), "month"),
+    rf = as.numeric(RF) / 100,
+    mkt_excess = as.numeric(`Mkt-RF`) / 100,
+    smb = as.numeric(SMB) / 100,
+    hml = as.numeric(HML) / 100
+  ) |>
+  filter(date >= "1990-01-01")
+
+factors_ff_monthly
+
+```
+# Returns and Fama-French Factors
+```{r}
+returns_risk_tbl <- returns_tbl |> 
+    group_by(symbol) |> 
+    left_join(factors_ff_monthly, by = "date") |> 
+    mutate(excess_returns = monthly.returns - rf) |> 
+    select(symbol, date, excess_returns:mkt_excess) |> 
+    ungroup()
+
+```
+# CAPM Function :
+
+```{r}
+library(slider)
+#  capm estimation
+estimate_capm <- function(data, min_obs = 1) {
+  if (nrow(data) < min_obs) {
+    beta <- as.numeric(NA)
+   
+  } else {
+    fit <- lm(excess_returns ~ mkt_excess + hml + smb , data = data)
+    # note that we take into account the coefficient of mkt_excess
+    beta <- as.numeric(coefficients(fit)[2])
+    
+  }
+  return(beta)
+}
+
+# rolling capm estimation
+roll_capm_estimation <- function(data, months, min_obs) {
+  data <- data |>
+    arrange(date)
+
+  betas <- slide_period_vec(
+    .x = data,
+    .i = data$date,
+    .period = "month",
+    .f = ~ estimate_capm(., min_obs),
+    .before = months - 1,
+    .complete = FALSE
+  )
+  
+  return(tibble(
+    month = unique(data$date),
+    beta = betas
+   
+  ))
+}
+
+```
+## Beta Estimation for Asset Returns
+```{r}
+beta_estimate_tbl <- returns_risk_tbl |> 
+    group_by(symbol) |> 
+    mutate(roll_capm_estimation(cur_data(), months = 60, min_obs = 48)) |> 
+    select(symbol, date, beta) |> 
+    drop_na() |> 
+    ungroup()
+
+beta_estimate_tbl 
+    
+```
+# Visualization of Beta
+```{r}
+beta_estimate_tbl |>
+    group_by(symbol) |> 
+    ggplot(aes(date, beta, color = symbol)) +
+    geom_line() +
+    theme_tq() + scale_color_tq(theme = "dark") +
+    labs(
+        title = "Monthly Beta Estimates",
+        subtitle = "Exposure is less than 1",
+        caption = "Selected Health-Care Stocks",
+        x = "",
+        y = "Beta"
+    )
+```
+#Interactive plot 
+```{r}
+beta_estimate_tbl |> 
+    plot_time_series(
+        .date_var = date,
+        .value = beta,
+        .color_var = symbol,
+        .smooth = FALSE,
+        .title = "Monthly Beta Estimates for selected Health-Care Stocks",
+        .x_lab = "",
+        .y_intercept = 0,
+        .legend_show = FALSE
+    )
+```
+
+# Thus the exposure is less than 1 for most of the health care stocks from 2021-2022*          [* :- current]
+```{r}
+port_risk_tbl <- port_tbl |> 
+    left_join(factors_ff_monthly, by = "date") |> 
+    mutate(excess_returns = portfolio.returns -rf) |> 
+    select(date, excess_returns:mkt_excess)
+
+port_risk_tbl
+```
+```{r}
+beta_port_tbl <- port_risk_tbl |> 
+    mutate(roll_capm_estimation(cur_data(), months = 60, min_obs = 48)) |> 
+    select(date, beta) |> 
+    drop_na()
+
+beta_port_tbl
+```
+# Beta Visualization for Portfolio
+```{r}
+beta_port_tbl |> 
+    plot_time_series(
+        .date_var = date,
+        .value = beta,
+        .smooth = FALSE,
+        .y_intercept = 0,
+        .y_intercept_color = "RED",
+        .title = "Monthly Beta Estimates Health-Sector Portfolio",
+        .x_lab = "",
+        .y_lab = "Beta"
+    )
+```
+
+# What is observed is that Beta is less than 1, so less volatile compared to market returns
+
+
