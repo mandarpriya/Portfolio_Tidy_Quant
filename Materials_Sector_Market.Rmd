@@ -1,0 +1,323 @@
+---
+title: "Materials_Sector"
+author: "Mandar"
+date: "2022-10-05"
+output: 
+    html_document:
+        theme : united
+        code_folding : hide
+        df_print: paged
+        highlight: tango
+        number_sections: TRUE
+        toc: yes
+        toc_depth: 2
+        smooth_scroll: TRUE
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE,fig.align = "center",
+                        message = FALSE,
+                      warning = FALSE)
+options(tinytex.verbose = TRUE)
+
+```
+# libraries
+
+```{r}
+library(tidymodels)
+library(tidyquant)
+library(tidyverse)
+library(scales)
+library(ggplot2)
+library(plotly)
+library(timetk)
+library(modeltime)
+library(slider)
+library(frenchdata)
+
+```
+# Materials Sector
+Newmont Corporation "NEM",
+Ecolab Inc. "ECL"
+Air Products and Chemicals, Inc. "APD"
+W.W. Grainger, Inc. (GWW)
+Cleveland-Cliffs Inc "CLF
+
+
+```{r}
+symbols <- c("NEM","ECL","APD","GWW","CLF") |> sort()
+
+prices <- symbols |> 
+    tq_get(get = "stock.prices",from = "1990-01-01")
+
+prices 
+    
+
+
+```
+# Visualization of Prices
+
+```{r}
+prices |> 
+    group_by(symbol) |> 
+    ggplot(aes(date, adjusted,color = symbol)) +
+    geom_line() + scale_y_continuous(labels = scales::dollar) +
+    theme_tq() + scale_color_tq(theme= "dark") +
+    labs(
+        title = "Stock Prices for selected Materials -Sector Stocks",
+        subtitle = "GWW has an upward trend",
+        y = "Adjusted Prices",
+        x = ""
+    )
+```
+# Interactive plot
+```{r}
+prices |> 
+    plot_time_series(
+        .date_var = date,
+        .value = adjusted,
+        .color_var = symbol,
+        .facet_scales = "free_y",
+        .smooth = FALSE,
+        .y_intercept = 0,
+        .y_intercept_color = "BLACK",
+        .y_lab = "Adjusted Prices",
+        .x_lab = "",
+        .title = "Selected Stocks Prices of Materials-Sector",
+        .legend_show = FALSE
+    )
+```
+
+# Stock Returns:
+```{r}
+returns_tbl <- prices |> 
+    group_by(symbol) |> 
+    tq_transmute(
+        select     = adjusted,
+        mutate_fun = periodReturn,
+        period     = "monthly"
+    ) |> 
+    ungroup() |> 
+    mutate(date = rollback(date, roll_to_first = TRUE))
+
+returns_tbl
+```
+# Visualization of Returns
+```{r}
+returns_tbl |> 
+    group_by(symbol) |> 
+    ggplot(aes(date, monthly.returns, color = symbol)) +
+    geom_line() + facet_wrap(~symbol) +
+    theme_tq() + scale_y_continuous(labels = scales::percent) +
+    theme(legend.position = "none") +
+    scale_color_tq(theme = "dark") + 
+    labs(
+        title = "Monthly Returns for Selected Materials- Sector Stocks",
+        subtitle = "Common Periods of Volatility : 2000, 2008, 2020",
+        x = "",
+        y = "Returns"
+    )
+```
+# Interactive Plot
+```{r}
+
+returns_tbl |> 
+    plot_time_series(
+        .date_var          = date,
+        .value             = monthly.returns * 100,
+        .color_var         = symbol,
+        .facet_scales      = "free_y",
+        .facet_vars        = symbol,
+        .facet_ncol        = 2,
+        .title             = "Monthly Returns Selected Materials-Sector Stocks",
+        .x_lab             = "",
+        .y_lab             = "Returns",
+        .y_intercept       = 0,
+        .y_intercept_color = "Black",
+        .smooth            = FALSE 
+    )
+```
+# Fama-French 3 Factors
+
+```{r}
+factors_ff_monthly_raw <- download_french_data("Fama/French 3 Factors")
+factors_ff_monthly <- factors_ff_monthly_raw$subsets$data[[1]] |>
+  transmute(
+    date = floor_date(ymd(str_c(date,"01")),"month"),
+    rf = as.numeric(RF) / 100,
+    mkt_excess = as.numeric(`Mkt-RF`) / 100,
+    smb = as.numeric(SMB) / 100,
+    hml = as.numeric(HML) / 100
+  ) %>%
+  # filter the dates 
+  filter(date >= "1990-01-01")
+
+factors_ff_monthly 
+
+```
+# Combining the Returns and Fama-French 
+```{r}
+returns_risk_tbl <- returns_tbl |> 
+    group_by(symbol) |> 
+    left_join(factors_ff_monthly, by = "date") |> 
+    mutate(excess_returns = monthly.returns - rf) |> 
+    select(symbol, date, excess_returns:mkt_excess) |> 
+    ungroup()
+
+returns_risk_tbl
+```
+
+# Portfolio Construction :
+```{r}
+n <- length(symbols)
+#weights
+w <- rep(1,n)/n
+
+port_tbl <- returns_tbl |> 
+    group_by(symbol) |> 
+    tq_portfolio(
+        assets_col    = symbol,
+        returns_col   = monthly.returns,
+        weights       = w,
+        rebalance_on  = "years"
+    ) |> 
+    ungroup()
+port_tbl
+```
+#Visualization of Portfolio Returns : Interactive Plot
+```{r}
+port_tbl |> 
+    plot_time_series(
+    .date_var = date,
+    .value = portfolio.returns*100 ,
+    .title = "Portfolio Returns for Utility- Sector",
+    .y_lab = "Returns",
+    .x_lab = "",
+    .y_intercept = 0,
+    .y_intercept_color = "BLUE",
+    .smooth = FALSE
+  )
+```
+
+
+# Static Visualization
+```{r}
+port_tbl |> 
+    ggplot(aes(date, portfolio.returns)) +
+    geom_line() + scale_y_continuous(labels = scales::percent) +
+    theme_tq() + scale_color_tq(theme = "dark") +
+    labs(
+        title = "Portfolio Returns for Utility -Sector",
+        subtitle = "Periods of Volatility obseerved : 2000, 2008, 2020, 2021",
+        x  = "",
+        y  = "Returns"
+    )
+```
+# Combining Portfolio Returns and Fama-French Factors
+```{r}
+port_risk_tbl <- port_tbl |> 
+    left_join(factors_ff_monthly, by = "date") |> 
+    mutate(excess_returns = portfolio.returns - rf) |> 
+    select(date, excess_returns:mkt_excess)
+port_risk_tbl
+```
+# Beta Estimation
+## Estimation function:-
+```{r}
+estimate_capm <- function(data, min_obs = 1) {
+  if (nrow(data) < min_obs) {
+    beta <- as.numeric(NA)
+   
+  } else {
+    fit <- lm(excess_returns ~ mkt_excess + hml + smb , data = data)
+    # note that we take into account the coefficient of mkt_excess
+    beta <- as.numeric(coefficients(fit)[2])
+    
+  }
+  return(beta)
+}
+
+# rolling capm estimation
+roll_capm_estimation <- function(data, months, min_obs) {
+  data <- data |>
+    arrange(date)
+
+  betas <- slide_period_vec(
+    .x = data,
+    .i = data$date,
+    .period = "month",
+    .f = ~ estimate_capm(., min_obs),
+    .before = months - 1,
+    .complete = FALSE
+  )
+  
+  return(tibble(
+    month = unique(data$date),
+    beta = betas
+   
+  ))
+}
+```
+
+# Beta Estimation for Stock Returns
+```{r}
+beta_estimation_tbl <- returns_risk_tbl |> 
+    group_by(symbol) |> 
+    mutate(roll_capm_estimation(cur_data(), months = 60, min_obs = 48)) |> 
+    select(symbol, date,beta) |> 
+    ungroup() |> 
+    drop_na()
+
+beta_estimation_tbl
+```
+# Visualization of Beta Estimates for Stock 
+```{r}
+beta_estimation_tbl |> 
+    plot_time_series(
+        .date_var = date,
+        .value = beta,
+        .color_var = symbol, 
+        .facet_scales = "free_y",
+        .smooth = FALSE,
+        .y_intercept = 0,
+        .y_intercept_color = "BLACK",
+        .x_lab = "",
+        .y_lab = "Beta",
+        .title = "Beta Estimates for Selected Materials-Sector Stocks ",
+        .legend_show = FALSE
+    )
+```
+
+# Beta Estimates of Portfolio
+```{r}
+
+beta_port_tbl <- port_risk_tbl |> 
+    mutate(roll_capm_estimation(cur_data(), months = 60, min_obs = 48)) |> 
+    select(date, beta) |> 
+    drop_na()
+beta_port_tbl
+```
+# Visualization of Beta Estimates for Portfolio
+```{r}
+beta_port_tbl |> 
+    plot_time_series(
+        .date_var = date,
+        .value = beta,
+        .smooth = FALSE,
+        .y_intercept = 0,
+        .y_intercept_color = "BLUE",
+        .y_lab = "Beta",
+        .x_lab = "",
+        .title = "Beta Estimates of Portfolio Returns for Utility-Sector"
+    )
+```
+
+
+
+
+
+
+
+
+
+
